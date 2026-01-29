@@ -1,0 +1,103 @@
+# Maintainer: ysltr <your-email@example.com>
+# Local build PKGBUILD for facepass
+
+pkgname=facepass
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Linux face recognition PAM authentication system"
+arch=('x86_64')
+url="https://github.com/ysltr/facepass"
+license=('MIT')
+depends=(
+    'opencv'
+    'pam'
+)
+makedepends=(
+    'rust'
+    'cargo'
+    'clang'
+)
+optdepends=(
+    'v4l-utils: camera utilities'
+)
+backup=(
+    'etc/facepass/config.toml'
+)
+# For local build, no source needed
+source=()
+sha256sums=()
+
+# Build directory (adjust if needed)
+_builddir="/home/ysltr/builds/FacePass/facepass"
+
+build() {
+    cd "$_builddir"
+    cargo build --release
+}
+
+package() {
+    cd "$_builddir"
+
+    # Install binaries
+    install -Dm755 "target/release/facepass" "$pkgdir/usr/bin/facepass"
+    install -Dm755 "target/release/facepass-daemon" "$pkgdir/usr/bin/facepass-daemon"
+
+    # Install PAM module
+    install -Dm644 "target/release/libpam_facepass.so" "$pkgdir/usr/lib/security/pam_facepass.so"
+
+    # Install models
+    install -Dm644 "models/face_detection_yunet_2023mar.onnx" "$pkgdir/usr/share/facepass/models/face_detection_yunet_2023mar.onnx"
+    install -Dm644 "models/face_recognition_sface_2021dec.onnx" "$pkgdir/usr/share/facepass/models/face_recognition_sface_2021dec.onnx"
+
+    # Install default system config
+    install -Dm644 "config/facepass.toml" "$pkgdir/etc/facepass/config.toml"
+
+    # Install user config template
+    install -Dm644 "config/facepass-user.toml" "$pkgdir/usr/share/facepass/config.toml.example"
+
+    # Install systemd service
+    install -Dm644 "config/facepass.service" "$pkgdir/usr/lib/systemd/system/facepass.service"
+
+    # Install license
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Install documentation
+    install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    # Create directories
+    install -dm700 "$pkgdir/var/lib/facepass/faces"
+    install -dm755 "$pkgdir/run/facepass"
+}
+
+post_install() {
+    cat << 'EOF'
+==> FacePass installed successfully!
+
+  Quick Start:
+  1. Copy config to user directory:
+     mkdir -p ~/.config/facepass
+     cp /usr/share/facepass/config.toml.example ~/.config/facepass/config.toml
+
+  2. Edit config (set camera device, data path, etc.):
+     nano ~/.config/facepass/config.toml
+
+  3. Start the daemon:
+     sudo systemctl start facepass
+     sudo systemctl enable facepass
+
+  4. Add your face:
+     facepass add
+
+  5. Test recognition:
+     facepass test
+
+  6. Configure PAM (add to /etc/pam.d/sudo):
+     auth sufficient pam_facepass.so
+
+  Note: Keep a root terminal open when editing PAM config!
+EOF
+}
+
+post_upgrade() {
+    post_install
+}

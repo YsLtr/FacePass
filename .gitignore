@@ -21,8 +21,8 @@ Thumbs.db
 config/facepass-dev.toml
 
 # PKGBUILD local build artifacts
-src/
-pkg/
+# src/
+# pkg/
 *.pkg.tar.zst
 *.pkg.tar.xz
-PKGBUILD.local
+#PKGBUILD.local
