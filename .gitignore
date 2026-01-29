@@ -1,0 +1,28 @@
+# Build output
+/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ONNX models (large files, download separately)
+/models/*.onnx
+
+# User data
+/data/
+
+# Local config
+config/facepass-dev.toml
+
+# PKGBUILD local build artifacts
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+PKGBUILD.local

@@ -1,0 +1,39 @@
+[package]
+name = "facepass-daemon"
+description = "FacePass authentication daemon service"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "facepass-daemon"
+path = "src/main.rs"
+
+[dependencies]
+facepass-core = { path = "../facepass-core" }
+
+# OpenCV for Mat operations
+opencv = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Signal handling
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+
+# Async utilities
+futures = "0.3"

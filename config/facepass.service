@@ -1,0 +1,34 @@
+[Unit]
+Description=FacePass Face Authentication Daemon
+Documentation=https://github.com/ysltr/facepass
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/facepass-daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/facepass /run/facepass
+
+# Runtime directory
+RuntimeDirectory=facepass
+RuntimeDirectoryMode=0755
+
+# State directory
+StateDirectory=facepass
+StateDirectoryMode=0755
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=facepass
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+post_install() {
+    cat << 'EOF'
+==> FacePass installed successfully!
+
+  Quick Start:
+  1. Copy config to user directory:
+     mkdir -p ~/.config/facepass
+     cp /usr/share/facepass/config.toml.example ~/.config/facepass/config.toml
+
+  2. Edit config (set camera device, data path, etc.):
+     nano ~/.config/facepass/config.toml
+
+  3. Start the daemon:
+     sudo systemctl start facepass
+     sudo systemctl enable facepass
+
+  4. Add your face:
+     facepass add
+
+  5. Test recognition:
+     facepass test
+
+  6. Configure PAM (add to /etc/pam.d/sudo):
+     auth sufficient pam_facepass.so
+
+  WARNING: Keep a root terminal open when editing PAM config!
+EOF
+}
+
+post_upgrade() {
+    post_install
+}
+
+pre_remove() {
+    systemctl stop facepass 2>/dev/null || true
+    systemctl disable facepass 2>/dev/null || true
+}
+
+post_remove() {
+    echo "==> FacePass removed."
+    echo "    User data in ~/.config/facepass and /var/lib/facepass was NOT removed."
+    echo "    Remove PAM configuration manually from /etc/pam.d/* if needed."
+}

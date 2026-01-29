@@ -1,0 +1,41 @@
+[package]
+name = "facepass-cli"
+description = "FacePass command-line interface"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "facepass"
+path = "src/main.rs"
+
+[dependencies]
+facepass-core = { path = "../facepass-core" }
+
+# OpenCV for Mat operations
+opencv = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Terminal
+crossterm = "0.28"
+
+# Time
+chrono = "0.4"
+
+# System
+libc = "0.2"

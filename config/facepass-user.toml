@@ -1,0 +1,73 @@
+# FacePass User Configuration
+# Location: ~/.config/facepass/config.toml
+#
+# This is the user-specific configuration file.
+# Settings here override /etc/facepass/config.toml
+
+[video]
+# Camera device path (use `facepass cameras` to find available devices)
+device = "/dev/video0"
+
+# Authentication timeout in seconds
+timeout = 5
+
+# Maximum frames to try before giving up
+max_frames = 30
+
+# Frame dimensions (0 = auto)
+frame_width = 640
+frame_height = 480
+
+[detection]
+# YuNet face detection confidence threshold (0.0 - 1.0)
+score_threshold = 0.9
+
+# Non-maximum suppression threshold
+nms_threshold = 0.3
+
+# Input size for YuNet model
+input_width = 320
+input_height = 320
+
+[recognition]
+# SFace cosine similarity threshold (higher = stricter)
+# Recommended: 0.363 (OpenCV default) to 0.5
+similarity_threshold = 0.4
+
+# Maximum faces per user
+max_faces_per_user = 5
+
+# Number of consecutive successful matches required
+required_matches = 1
+
+[security]
+# Skip face recognition for SSH sessions
+ignore_ssh = true
+
+# Skip face recognition when laptop lid is closed
+ignore_closed_lid = true
+
+# Show desktop notification during authentication
+show_notification = false
+
+[daemon]
+# Unix socket path for IPC
+socket_path = "/run/facepass/facepass.sock"
+
+# Log level: trace, debug, info, warn, error
+log_level = "info"
+
+# PID file path
+pid_file = "/run/facepass/facepass.pid"
+
+[models]
+# Path to YuNet face detection model
+yunet_path = "/usr/share/facepass/models/face_detection_yunet_2023mar.onnx"
+
+# Path to SFace face recognition model
+sface_path = "/usr/share/facepass/models/face_recognition_sface_2021dec.onnx"
+
+[storage]
+# Path to store face data
+# For user-specific data, use ~/.local/share/facepass/faces
+data_dir = "/var/lib/facepass/faces"

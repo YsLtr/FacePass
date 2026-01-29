@@ -1,0 +1,25 @@
+[package]
+name = "facepass-pam"
+description = "FacePass PAM authentication module"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "pam_facepass"
+crate-type = ["cdylib"]
+
+[dependencies]
+# PAM bindings
+pam = { version = "0.8", features = ["module"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+log = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
