@@ -4,6 +4,7 @@ use super::get_username;
 use anyhow::Result;
 use opencv::prelude::*;
 use facepass_core::{
+    anti_spoofing::AntiSpoofDetector,
     camera::Camera,
     config::Config,
     detection::FaceDetector,
@@ -39,12 +40,38 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
     let camera = Camera::open(&config.video)?;
     let detector = FaceDetector::new(&config.models.yunet_path, &config.detection)?;
     let recognizer = FaceRecognizer::new(&config.models.sface_path, &config.recognition)?;
+    let mut anti_spoof = if config.anti_spoof.enabled {
+        match AntiSpoofDetector::new(&config.models.anti_spoof_path, &config.anti_spoof) {
+            Ok(d) => {
+                println!(
+                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{})",
+                    config.anti_spoof.threshold,
+                    config.anti_spoof.input_size,
+                    config.anti_spoof.input_size
+                );
+                Some(d)
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: anti-spoofing unavailable, falling back to face recognition only: {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        println!("Anti-spoofing disabled");
+        None
+    };
 
     println!("Please look at the camera...");
     println!("Press Ctrl+C to stop.\n");
 
     let mut matches = 0;
     let mut attempts = 0;
+    let mut detected_faces = 0;
+    let mut spoof_frames = 0;
+    let mut liveness_errors = 0;
     let threshold = config.recognition.similarity_threshold;
 
     for i in 0..frames {
@@ -70,10 +97,44 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
         };
 
         let face_row = faces.row(0)?.try_clone()?;
+        detected_faces += 1;
         attempts += 1;
 
         // Align and extract feature
         let aligned = recognizer.align_crop(&frame, &face_row)?;
+
+        if let Some(ref anti_spoof_detector) = anti_spoof {
+            match anti_spoof_detector.check_liveness(&aligned) {
+                Ok(score) if score >= config.anti_spoof.threshold => {
+                    if verbose {
+                        eprintln!("Liveness passed on frame {} (score: {:.3})", i + 1, score);
+                    }
+                }
+                Ok(score) => {
+                    spoof_frames += 1;
+                    print!(
+                        "\r! Spoof detected #{} (score: {:.3}) ({}/{})",
+                        spoof_frames,
+                        score,
+                        i + 1,
+                        frames
+                    );
+                    io::stdout().flush()?;
+                    continue;
+                }
+                Err(e) => {
+                    liveness_errors += 1;
+                    if verbose {
+                        eprintln!("\rLiveness error on frame {}: {}", i + 1, e);
+                    }
+                    // Avoid spamming the terminal if the model is incompatible.
+                    eprintln!("Warning: disabling anti-spoofing after error: {}", e);
+                    anti_spoof = None;
+                    continue;
+                }
+            }
+        }
+
         let feature_mat = recognizer.extract_feature(&aligned)?;
         let feature = mat_to_vec(&feature_mat)?;
 
@@ -106,7 +167,10 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
     println!("\n");
     println!("Test complete!");
     println!("  Attempts: {}", attempts);
+    println!("  Faces detected: {}", detected_faces);
     println!("  Matches: {}", matches);
+    println!("  Spoof frames: {}", spoof_frames);
+    println!("  Liveness errors: {}", liveness_errors);
     println!(
         "  Success rate: {:.1}%",
         if attempts > 0 {

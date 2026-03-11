@@ -3,6 +3,7 @@
 //! Core functionality for face detection, recognition, and authentication.
 
 pub mod alignment;
+pub mod anti_spoofing;
 pub mod camera;
 pub mod config;
 pub mod detection;

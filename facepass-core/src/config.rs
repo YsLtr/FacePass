@@ -230,6 +230,10 @@ pub struct ModelsConfig {
     /// Path to SFace model
     #[serde(default = "default_sface_path")]
     pub sface_path: String,
+
+    /// Path to anti-spoofing model
+    #[serde(default = "default_anti_spoof_path")]
+    pub anti_spoof_path: String,
 }
 
 impl Default for ModelsConfig {
@@ -237,6 +241,7 @@ impl Default for ModelsConfig {
         Self {
             yunet_path: default_yunet_path(),
             sface_path: default_sface_path(),
+            anti_spoof_path: default_anti_spoof_path(),
         }
     }
 }
@@ -249,6 +254,48 @@ fn default_sface_path() -> String {
         "{}/face_recognition_sface_2021dec.onnx",
         DEFAULT_MODELS_DIR
     )
+}
+fn default_anti_spoof_path() -> String {
+    format!(
+        "{}/anti_spoof_minifasnetv2se.onnx",
+        DEFAULT_MODELS_DIR
+    )
+}
+
+/// Anti-spoofing configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AntiSpoofConfig {
+    /// Enable anti-spoofing detection
+    #[serde(default = "default_anti_spoof_enabled")]
+    pub enabled: bool,
+
+    /// Liveness score threshold (0.0-1.0, higher = stricter)
+    #[serde(default = "default_liveness_threshold")]
+    pub threshold: f32,
+
+    /// Input size for anti-spoofing model (width = height)
+    #[serde(default = "default_anti_spoof_input_size")]
+    pub input_size: i32,
+}
+
+impl Default for AntiSpoofConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_anti_spoof_enabled(),
+            threshold: default_liveness_threshold(),
+            input_size: default_anti_spoof_input_size(),
+        }
+    }
+}
+
+fn default_anti_spoof_enabled() -> bool {
+    true
+}
+fn default_liveness_threshold() -> f32 {
+    0.5
+}
+fn default_anti_spoof_input_size() -> i32 {
+    80
 }
 
 /// Storage configuration
@@ -291,6 +338,9 @@ pub struct Config {
 
     #[serde(default)]
     pub models: ModelsConfig,
+
+    #[serde(default)]
+    pub anti_spoof: AntiSpoofConfig,
 
     #[serde(default)]
     pub storage: StorageConfig,
@@ -390,6 +440,18 @@ impl Config {
             ));
         }
 
+        if self.anti_spoof.threshold < 0.0 || self.anti_spoof.threshold > 1.0 {
+            return Err(Error::Config(
+                "anti_spoof.threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+
+        if self.anti_spoof.input_size <= 0 || self.anti_spoof.input_size > 512 {
+            return Err(Error::Config(
+                "anti_spoof.input_size must be between 1 and 512".to_string(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -397,6 +459,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn missing_model_path(name: &str) -> String {
+        PathBuf::from("/tmp")
+            .join(format!("facepass-test-missing-{name}.onnx"))
+            .display()
+            .to_string()
+    }
 
     #[test]
     fn test_default_config() {
@@ -411,5 +481,33 @@ mod tests {
         let toml_str = toml::to_string(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.video.timeout, config.video.timeout);
+    }
+
+    #[test]
+    fn test_validate_allows_missing_anti_spoof_model() {
+        let mut config = Config::default();
+        config.anti_spoof.enabled = true;
+        config.models.anti_spoof_path = missing_model_path("anti-spoof");
+
+        // Keep the always-required models present so this test only exercises
+        // the anti-spoof fallback policy.
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_anti_spoof_threshold() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.anti_spoof.threshold = 1.5;
+
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err
+            .to_string()
+            .contains("anti_spoof.threshold must be between 0.0 and 1.0"));
     }
 }

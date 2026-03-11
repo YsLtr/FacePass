@@ -20,6 +20,9 @@ pub enum Error {
     #[error("Face recognition error: {0}")]
     Recognition(String),
 
+    #[error("Anti-spoofing error: {0}")]
+    AntiSpoofing(String),
+
     #[error("Storage error: {0}")]
     Storage(String),
 

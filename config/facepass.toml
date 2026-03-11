@@ -66,6 +66,20 @@ yunet_path = "/usr/share/facepass/models/face_detection_yunet_2023mar.onnx"
 # Path to SFace face recognition model
 sface_path = "/usr/share/facepass/models/face_recognition_sface_2021dec.onnx"
 
+# Path to MiniFASNetV2SE anti-spoofing model
+anti_spoof_path = "/usr/share/facepass/models/anti_spoof_minifasnetv2se.onnx"
+
+[anti_spoof]
+# Enable anti-spoofing (liveness detection)
+enabled = true
+
+# Liveness score threshold (0.0-1.0, higher = stricter)
+threshold = 0.5
+
+# Input size for anti-spoofing model (width = height)
+# Some models use 40, others use 80
+input_size = 80
+
 [storage]
 # Path to store face data
 data_dir = "/var/lib/facepass/faces"

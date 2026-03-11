@@ -2,6 +2,7 @@
 
 use opencv::prelude::*;
 use facepass_core::{
+    anti_spoofing::AntiSpoofDetector,
     camera::Camera,
     config::Config,
     detection::FaceDetector,
@@ -70,6 +71,21 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
         Err(e) => return AuthResponse::failure(format!("Recognizer error: {}", e)),
     };
 
+    let anti_spoof = if config.anti_spoof.enabled {
+        match AntiSpoofDetector::new(&config.models.anti_spoof_path, &config.anti_spoof) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warn!(
+                    "Anti-spoofing unavailable, falling back to face recognition only: {}",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let threshold = config.recognition.similarity_threshold;
     let required_matches = config.recognition.required_matches;
     let max_frames = config.video.max_frames;
@@ -115,6 +131,24 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
             Ok(a) => a,
             Err(_) => continue,
         };
+
+        // Anti-spoofing check
+        if let Some(ref detector) = anti_spoof {
+            match detector.check_liveness(&aligned) {
+                Ok(score) if score >= config.anti_spoof.threshold => {
+                    debug!("Liveness check passed (score: {:.3})", score);
+                }
+                Ok(score) => {
+                    debug!("Liveness check failed (score: {:.3})", score);
+                    consecutive_matches = 0;
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Liveness check error: {}", e);
+                    continue;
+                }
+            }
+        }
 
         let feature_mat = match recognizer.extract_feature(&aligned) {
             Ok(f) => f,

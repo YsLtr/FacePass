@@ -8,7 +8,6 @@ use facepass_core::{
     storage::FaceStorage,
 };
 use std::path::Path;
-use std::process::Command;
 
 pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
     println!("FacePass System Status");
@@ -46,6 +45,30 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
         println!("✓ Found");
     } else {
         println!("✗ Not found: {}", config.models.sface_path);
+    }
+
+    print!("  Anti-spoofing: ");
+    if config.anti_spoof.enabled {
+        println!(
+            "✓ Enabled (threshold: {:.2}, input: {}x{})",
+            config.anti_spoof.threshold,
+            config.anti_spoof.input_size,
+            config.anti_spoof.input_size
+        );
+    } else {
+        println!("✗ Disabled");
+    }
+
+    print!("  Anti-spoof model: ");
+    if Path::new(&config.models.anti_spoof_path).exists() {
+        println!("✓ Found");
+    } else if config.anti_spoof.enabled {
+        println!(
+            "! Not found: {} (will fall back to face recognition only)",
+            config.models.anti_spoof_path
+        );
+    } else {
+        println!("✗ Not found: {}", config.models.anti_spoof_path);
     }
 
     // Check camera

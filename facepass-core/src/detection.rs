@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 /// Face detector wrapper using YuNet model
 pub struct FaceDetector {
     detector: Arc<Mutex<Ptr<FaceDetectorYN>>>,
-    config: DetectionConfig,
 }
 
 // Safety: We protect the detector with a Mutex
@@ -37,7 +36,6 @@ impl FaceDetector {
 
         Ok(Self {
             detector: Arc::new(Mutex::new(detector)),
-            config: config.clone(),
         })
     }
 

@@ -25,7 +25,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f64> {
         norm_b += y * y;
     }
 
-    let norm = (norm_a.sqrt() * norm_b.sqrt());
+    let norm = norm_a.sqrt() * norm_b.sqrt();
     if norm < 1e-10 {
         return Ok(0.0);
     }
