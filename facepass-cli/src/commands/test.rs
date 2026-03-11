@@ -2,7 +2,12 @@
 
 use super::get_username;
 use anyhow::Result;
-use opencv::prelude::*;
+use opencv::{
+    core::{Point, Rect, Scalar},
+    highgui,
+    imgproc,
+    prelude::*,
+};
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
     camera::Camera,
@@ -14,7 +19,13 @@ use facepass_core::{
 };
 use std::io::{self, Write};
 
-pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) -> Result<()> {
+pub fn run(
+    config_path: &str,
+    user: Option<String>,
+    frames: u32,
+    verbose: bool,
+    debug: bool,
+) -> Result<()> {
     let username = get_username(user)?;
     let config = Config::load(config_path).unwrap_or_default();
 
@@ -65,7 +76,11 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
     };
 
     println!("Please look at the camera...");
-    println!("Press Ctrl+C to stop.\n");
+    if debug {
+        println!("Press Enter or Esc to stop.\n");
+    } else {
+        println!("Press Ctrl+C to stop.\n");
+    }
 
     let mut matches = 0;
     let mut attempts = 0;
@@ -74,7 +89,17 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
     let mut liveness_errors = 0;
     let threshold = config.recognition.similarity_threshold;
 
-    for i in 0..frames {
+    if debug {
+        highgui::named_window("FacePass Test", highgui::WINDOW_AUTOSIZE)?;
+    }
+
+    let mut frame_idx = 0u32;
+    loop {
+        if !debug && frame_idx >= frames {
+            break;
+        }
+        frame_idx += 1;
+
         // Read frame
         let frame = match camera.read_frame() {
             Ok(f) => f,
@@ -90,47 +115,70 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
         let faces = match detector.detect_raw(&frame) {
             Ok(f) => f,
             Err(_) => {
-                print!("\rSearching for face... ({}/{})", i + 1, frames);
-                io::stdout().flush()?;
+                if !debug {
+                    print!("\rSearching for face... ({}/{})", frame_idx, frames);
+                    io::stdout().flush()?;
+                } else {
+                    let mut display = frame.try_clone()?;
+                    draw_text(
+                        &mut display,
+                        0,
+                        "Searching for face...",
+                        Scalar::new(0.0, 0.0, 255.0, 0.0),
+                    )?;
+                    highgui::imshow("FacePass Test", &display)?;
+                    let key = highgui::wait_key(1)?;
+                    if should_end(key) {
+                        break;
+                    }
+                }
                 continue;
             }
         };
 
         let face_row = faces.row(0)?.try_clone()?;
+        let confidence = *faces.at_2d::<f32>(0, 14)?;
         detected_faces += 1;
         attempts += 1;
 
         // Align and extract feature
         let aligned = recognizer.align_crop(&frame, &face_row)?;
 
+        let mut liveness_score: Option<f32> = None;
+        let mut liveness_status = "disabled";
         if let Some(ref anti_spoof_detector) = anti_spoof {
             match anti_spoof_detector.check_liveness(&aligned) {
                 Ok(score) if score >= config.anti_spoof.threshold => {
+                    liveness_score = Some(score);
+                    liveness_status = "pass";
                     if verbose {
-                        eprintln!("Liveness passed on frame {} (score: {:.3})", i + 1, score);
+                        eprintln!("Liveness passed on frame {} (score: {:.3})", frame_idx, score);
                     }
                 }
                 Ok(score) => {
                     spoof_frames += 1;
-                    print!(
-                        "\r! Spoof detected #{} (score: {:.3}) ({}/{})",
-                        spoof_frames,
-                        score,
-                        i + 1,
-                        frames
-                    );
-                    io::stdout().flush()?;
-                    continue;
+                    liveness_score = Some(score);
+                    liveness_status = "spoof";
+                    if !debug {
+                        print!(
+                            "\r! Spoof detected #{} (score: {:.3}) ({}/{})",
+                            spoof_frames,
+                            score,
+                            frame_idx,
+                            frames
+                        );
+                        io::stdout().flush()?;
+                    }
                 }
                 Err(e) => {
                     liveness_errors += 1;
+                    liveness_status = "error";
                     if verbose {
-                        eprintln!("\rLiveness error on frame {}: {}", i + 1, e);
+                        eprintln!("\rLiveness error on frame {}: {}", frame_idx, e);
                     }
                     // Avoid spamming the terminal if the model is incompatible.
                     eprintln!("Warning: disabling anti-spoofing after error: {}", e);
                     anti_spoof = None;
-                    continue;
                 }
             }
         }
@@ -139,20 +187,33 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
         let feature = mat_to_vec(&feature_mat)?;
 
         // Match against registered faces
+        let mut match_label: Option<String> = None;
+        let mut match_score: Option<f64> = None;
         match find_best_match(&feature, &face_data, threshold) {
             Ok(Some(m)) => {
                 matches += 1;
-                print!(
-                    "\r✓ Match #{}: {} (similarity: {:.2}%) ({}/{})",
-                    matches,
-                    m.face_data.label,
-                    m.similarity * 100.0,
-                    i + 1,
-                    frames
-                );
+                match_label = Some(m.face_data.label.clone());
+                match_score = Some(m.similarity);
+                if !debug {
+                    print!(
+                        "\r✓ Match #{}: {} (similarity: {:.2}%) ({}/{})",
+                        matches,
+                        m.face_data.label,
+                        m.similarity * 100.0,
+                        frame_idx,
+                        frames
+                    );
+                }
             }
             Ok(None) => {
-                print!("\r✗ No match (best < {:.0}%) ({}/{})", threshold * 100.0, i + 1, frames);
+                if !debug {
+                    print!(
+                        "\r✗ No match (best < {:.0}%) ({}/{})",
+                        threshold * 100.0,
+                        frame_idx,
+                        frames
+                    );
+                }
             }
             Err(e) => {
                 if verbose {
@@ -161,7 +222,64 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
             }
         }
 
-        io::stdout().flush()?;
+        if debug {
+            let mut display = frame.try_clone()?;
+            draw_faces(&mut display, &faces)?;
+            draw_text(
+                &mut display,
+                0,
+                &format!("Detection: {:.1}%", confidence * 100.0),
+                Scalar::new(0.0, 255.0, 0.0, 0.0),
+            )?;
+
+            let live_text = match (liveness_status, liveness_score) {
+                ("pass", Some(s)) => format!("Liveness: PASS ({:.3})", s),
+                ("spoof", Some(s)) => format!("Liveness: SPOOF ({:.3})", s),
+                ("error", _) => "Liveness: ERROR".to_string(),
+                _ => "Liveness: disabled".to_string(),
+            };
+            let live_color = match liveness_status {
+                "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
+                "spoof" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+                _ => Scalar::new(200.0, 200.0, 200.0, 0.0),
+            };
+            draw_text(&mut display, 1, &live_text, live_color)?;
+
+            let match_text = match (match_label, match_score) {
+                (Some(label), Some(score)) => {
+                    format!("Match: {} ({:.2}%)", label, score * 100.0)
+                }
+                _ => format!("Match: none (threshold {:.0}%)", threshold * 100.0),
+            };
+            draw_text(
+                &mut display,
+                2,
+                &match_text,
+                Scalar::new(255.0, 255.0, 255.0, 0.0),
+            )?;
+
+            draw_text(
+                &mut display,
+                3,
+                &format!(
+                    "Attempts: {}  Matches: {}  Spoof: {}  Errors: {}",
+                    attempts, matches, spoof_frames, liveness_errors
+                ),
+                Scalar::new(200.0, 200.0, 200.0, 0.0),
+            )?;
+
+            highgui::imshow("FacePass Test", &display)?;
+            let key = highgui::wait_key(1)?;
+            if should_end(key) {
+                break;
+            }
+        } else {
+            io::stdout().flush()?;
+        }
+    }
+
+    if debug {
+        highgui::destroy_window("FacePass Test")?;
     }
 
     println!("\n");
@@ -181,4 +299,44 @@ pub fn run(config_path: &str, user: Option<String>, frames: u32, verbose: bool) 
     );
 
     Ok(())
+}
+
+fn draw_faces(image: &mut Mat, faces: &Mat) -> Result<()> {
+    let rows = faces.rows();
+    for i in 0..rows {
+        let x = *faces.at_2d::<f32>(i, 0)? as i32;
+        let y = *faces.at_2d::<f32>(i, 1)? as i32;
+        let w = *faces.at_2d::<f32>(i, 2)? as i32;
+        let h = *faces.at_2d::<f32>(i, 3)? as i32;
+        let rect = Rect::new(x.max(0), y.max(0), w.max(0), h.max(0));
+        imgproc::rectangle(
+            image,
+            rect,
+            Scalar::new(0.0, 255.0, 0.0, 0.0),
+            2,
+            imgproc::LINE_8,
+            0,
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()> {
+    let origin = Point::new(10, 25 + line * 20);
+    imgproc::put_text(
+        image,
+        text,
+        origin,
+        imgproc::FONT_HERSHEY_SIMPLEX,
+        0.6,
+        color,
+        1,
+        imgproc::LINE_AA,
+        false,
+    )?;
+    Ok(())
+}
+
+fn should_end(key: i32) -> bool {
+    matches!(key, 27 | 10 | 13)
 }

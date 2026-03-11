@@ -17,6 +17,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Show debug camera window with overlay info
+    #[arg(short = 'd', long, global = true)]
+    debug: bool,
+
     /// Path to configuration file
     #[arg(short, long, global = true, default_value = "~/.config/facepass/config.toml")]
     config: String,
@@ -121,7 +125,7 @@ fn main() {
                 eprintln!("Error: Root privileges required to add faces for other users");
                 std::process::exit(1);
             }
-            commands::add::run(&config_path, user, label, cli.verbose)
+            commands::add::run(&config_path, user, label, cli.verbose, cli.debug)
         }
         Commands::Remove { index, user } => {
             if user.is_some() && !is_root {
@@ -149,7 +153,7 @@ fn main() {
                 eprintln!("Error: Root privileges required to test faces for other users");
                 std::process::exit(1);
             }
-            commands::test::run(&config_path, user, frames, cli.verbose)
+            commands::test::run(&config_path, user, frames, cli.verbose, cli.debug)
         }
         Commands::Config { show, set } => commands::config::run(&config_path, show, set, cli.verbose),
         Commands::Cameras => commands::cameras::run(cli.verbose),
