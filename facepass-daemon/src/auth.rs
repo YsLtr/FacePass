@@ -140,12 +140,9 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
                 }
                 Ok(score) => {
                     debug!("Liveness check failed (score: {:.3})", score);
-                    consecutive_matches = 0;
-                    continue;
                 }
                 Err(e) => {
                     warn!("Liveness check error: {}", e);
-                    continue;
                 }
             }
         }
