@@ -96,11 +96,7 @@ pub fn find_best_match(
 }
 
 /// Check if a face matches any in the list (returns first match above threshold)
-pub fn matches_any(
-    query_feature: &[f32],
-    candidates: &[FaceData],
-    threshold: f64,
-) -> Result<bool> {
+pub fn matches_any(query_feature: &[f32], candidates: &[FaceData], threshold: f64) -> Result<bool> {
     for face_data in candidates {
         let similarity = cosine_similarity(query_feature, &face_data.feature)?;
         if similarity >= threshold {

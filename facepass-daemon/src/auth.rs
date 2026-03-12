@@ -1,6 +1,5 @@
 //! Authentication logic
 
-use opencv::prelude::*;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
     camera::Camera,
@@ -13,6 +12,7 @@ use facepass_core::{
     storage::FaceStorage,
 };
 use log::{debug, info, warn};
+use opencv::prelude::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -126,26 +126,30 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
             Err(_) => continue,
         };
 
-        // Align and extract feature
-        let aligned = match recognizer.align_crop(&frame, &face_row) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-
         // Anti-spoofing check
         if let Some(ref detector) = anti_spoof {
-            match detector.check_liveness(&aligned) {
+            match detector.check_liveness(&frame, &face_row) {
                 Ok(score) if score >= config.anti_spoof.threshold => {
                     debug!("Liveness check passed (score: {:.3})", score);
                 }
                 Ok(score) => {
                     debug!("Liveness check failed (score: {:.3})", score);
+                    consecutive_matches = 0;
+                    continue;
                 }
                 Err(e) => {
                     warn!("Liveness check error: {}", e);
+                    consecutive_matches = 0;
+                    continue;
                 }
             }
         }
+
+        // Align and extract feature
+        let aligned = match recognizer.align_crop(&frame, &face_row) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
 
         let feature_mat = match recognizer.extract_feature(&aligned) {
             Ok(f) => f,
@@ -169,9 +173,7 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
                 );
 
                 // Track best match
-                if best_match_info.is_none()
-                    || m.similarity > best_match_info.as_ref().unwrap().0
-                {
+                if best_match_info.is_none() || m.similarity > best_match_info.as_ref().unwrap().0 {
                     best_match_info = Some((m.similarity, m.face_data.label.clone()));
                 }
 

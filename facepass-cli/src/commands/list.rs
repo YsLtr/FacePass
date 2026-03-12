@@ -21,18 +21,12 @@ pub fn run(config_path: &str, user: Option<String>, verbose: bool) -> Result<()>
     }
 
     println!("Registered faces for '{}':\n", username);
-    println!(
-        "{:>5}  {:36}  {:20}  {}",
-        "Index", "ID", "Label", "Created"
-    );
+    println!("{:>5}  {:36}  {:20}  {}", "Index", "ID", "Label", "Created");
     println!("{}", "-".repeat(80));
 
     for (index, face) in faces.iter().enumerate() {
         let created = chrono_format(face.created_at);
-        println!(
-            "{:>5}  {}  {:20}  {}",
-            index, face.id, face.label, created
-        );
+        println!("{:>5}  {}  {:20}  {}", index, face.id, face.label, created);
     }
 
     println!(

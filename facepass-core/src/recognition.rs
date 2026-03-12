@@ -79,8 +79,11 @@ impl FaceRecognizer {
             .lock()
             .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
 
-        let score =
-            recognizer.match_(feature1, feature2, FaceRecognizerSF_DisType::FR_COSINE as i32)?;
+        let score = recognizer.match_(
+            feature1,
+            feature2,
+            FaceRecognizerSF_DisType::FR_COSINE as i32,
+        )?;
 
         Ok(score)
     }

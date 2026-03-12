@@ -115,7 +115,10 @@ async fn handle_client(stream: UnixStream, config: Arc<Config>) -> Result<()> {
             response.confidence.unwrap_or(0.0) * 100.0
         );
     } else {
-        info!("Auth failed: user={}, reason={}", request.username, response.message);
+        info!(
+            "Auth failed: user={}, reason={}",
+            request.username, response.message
+        );
     }
 
     Ok(())

@@ -30,7 +30,7 @@ pub fn get_username(user_arg: Option<String>) -> anyhow::Result<String> {
     }
 
     // Fall back to USER
-    env::var("USER").or_else(|_| env::var("LOGNAME")).map_err(|_| {
-        anyhow::anyhow!("Could not determine username. Please specify with --user")
-    })
+    env::var("USER")
+        .or_else(|_| env::var("LOGNAME"))
+        .map_err(|_| anyhow::anyhow!("Could not determine username. Please specify with --user"))
 }

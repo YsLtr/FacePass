@@ -44,8 +44,14 @@ pub fn run(config_path: &str, show: bool, set: Option<String>, _verbose: bool) -
 
         println!("[security]");
         println!("  ignore_ssh = {}", config.security.ignore_ssh);
-        println!("  ignore_closed_lid = {}", config.security.ignore_closed_lid);
-        println!("  show_notification = {}", config.security.show_notification);
+        println!(
+            "  ignore_closed_lid = {}",
+            config.security.ignore_closed_lid
+        );
+        println!(
+            "  show_notification = {}",
+            config.security.show_notification
+        );
         println!();
 
         println!("[daemon]");

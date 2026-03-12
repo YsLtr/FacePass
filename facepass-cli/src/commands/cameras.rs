@@ -22,10 +22,7 @@ pub fn run(_verbose: bool) -> Result<()> {
         println!("  [{}] {}", index, device);
     }
 
-    println!(
-        "\nFound {} camera(s)",
-        cameras.len()
-    );
+    println!("\nFound {} camera(s)", cameras.len());
     println!("\nTo use a specific camera, edit the 'device' field in");
     println!("  /etc/facepass/config.toml");
 

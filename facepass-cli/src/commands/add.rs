@@ -2,20 +2,14 @@
 
 use super::get_username;
 use anyhow::Result;
+use facepass_core::{
+    anti_spoofing::AntiSpoofDetector, camera::Camera, config::Config, detection::FaceDetector,
+    models::FaceRecord, recognition::FaceRecognizer, storage::FaceStorage,
+};
 use opencv::{
     core::{Point, Rect, Scalar},
-    highgui,
-    imgproc,
+    highgui, imgproc,
     prelude::*,
-};
-use facepass_core::{
-    anti_spoofing::AntiSpoofDetector,
-    camera::Camera,
-    config::Config,
-    detection::FaceDetector,
-    models::FaceRecord,
-    recognition::FaceRecognizer,
-    storage::FaceStorage,
 };
 use std::io::{self, Write};
 
@@ -68,14 +62,15 @@ pub fn run(
     let camera = Camera::open(&config.video)?;
     let detector = FaceDetector::new(&config.models.yunet_path, &config.detection)?;
     let recognizer = FaceRecognizer::new(&config.models.sface_path, &config.recognition)?;
-    let mut anti_spoof = if debug && config.anti_spoof.enabled {
+    let mut anti_spoof = if config.anti_spoof.enabled {
         match AntiSpoofDetector::new(&config.models.anti_spoof_path, &config.anti_spoof) {
             Ok(d) => {
                 println!(
-                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{})",
+                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{}, scale: {:.1})",
                     config.anti_spoof.threshold,
                     config.anti_spoof.input_size,
-                    config.anti_spoof.input_size
+                    config.anti_spoof.input_size,
+                    config.anti_spoof.crop_scale
                 );
                 Some(d)
             }
@@ -100,7 +95,11 @@ pub fn run(
     }
 
     // Try to capture a good face
-    let max_attempts = if debug { u32::MAX } else { config.video.max_frames };
+    let max_attempts = if debug {
+        u32::MAX
+    } else {
+        config.video.max_frames
+    };
     let mut attempt = 0;
     let mut best_confidence = 0.0f32;
     let mut best_feature: Option<Vec<f32>> = None;
@@ -155,17 +154,45 @@ pub fn run(
         // Get confidence
         let confidence = *faces.at_2d::<f32>(0, 14)?;
 
-        // Align and extract feature
-        let aligned = recognizer.align_crop(&frame, &face_row)?;
-        let feature = recognizer.extract_feature(&aligned)?;
+        let mut liveness_score: Option<f32> = None;
+        let mut liveness_status = "disabled";
+        let mut liveness_allowed = true;
+        if let Some(ref anti_spoof_detector) = anti_spoof {
+            match anti_spoof_detector.check_liveness(&frame, &face_row) {
+                Ok(score) if score >= config.anti_spoof.threshold => {
+                    liveness_score = Some(score);
+                    liveness_status = "pass";
+                }
+                Ok(score) => {
+                    liveness_score = Some(score);
+                    liveness_status = "spoof";
+                    liveness_allowed = false;
+                    if !debug {
+                        print!(
+                            "\r! Spoof detected (score: {:.3}) ({}/{})",
+                            score, attempt, max_attempts
+                        );
+                        io::stdout().flush()?;
+                    }
+                }
+                Err(e) => {
+                    liveness_status = "error";
+                    liveness_allowed = false;
+                    eprintln!("Warning: disabling anti-spoofing after error: {}", e);
+                    anti_spoof = None;
+                }
+            }
+        }
 
-        // Convert to vec
-        let feature_vec = facepass_core::recognition::mat_to_vec(&feature)?;
+        if liveness_allowed {
+            let aligned = recognizer.align_crop(&frame, &face_row)?;
+            let feature = recognizer.extract_feature(&aligned)?;
+            let feature_vec = facepass_core::recognition::mat_to_vec(&feature)?;
 
-        // Only use high confidence detections
-        if confidence > config.detection.score_threshold && confidence > best_confidence {
-            best_confidence = confidence;
-            best_feature = Some(feature_vec);
+            if confidence > config.detection.score_threshold && confidence > best_confidence {
+                best_confidence = confidence;
+                best_feature = Some(feature_vec);
+            }
         }
 
         if debug {
@@ -178,43 +205,18 @@ pub fn run(
                 Scalar::new(0.0, 255.0, 0.0, 0.0),
             )?;
 
-            if let Some(ref anti_spoof_detector) = anti_spoof {
-                match anti_spoof_detector.check_liveness(&aligned) {
-                    Ok(score) if score >= config.anti_spoof.threshold => {
-                        draw_text(
-                            &mut display,
-                            1,
-                            &format!("Liveness: PASS ({:.3})", score),
-                            Scalar::new(0.0, 255.0, 0.0, 0.0),
-                        )?;
-                    }
-                    Ok(score) => {
-                        draw_text(
-                            &mut display,
-                            1,
-                            &format!("Liveness: SPOOF ({:.3})", score),
-                            Scalar::new(0.0, 0.0, 255.0, 0.0),
-                        )?;
-                    }
-                    Err(e) => {
-                        draw_text(
-                            &mut display,
-                            1,
-                            "Liveness: ERROR",
-                            Scalar::new(0.0, 0.0, 255.0, 0.0),
-                        )?;
-                        eprintln!("Warning: disabling anti-spoofing after error: {}", e);
-                        anti_spoof = None;
-                    }
-                }
-            } else {
-                draw_text(
-                    &mut display,
-                    1,
-                    "Liveness: disabled",
-                    Scalar::new(200.0, 200.0, 200.0, 0.0),
-                )?;
-            }
+            let live_text = match (liveness_status, liveness_score) {
+                ("pass", Some(s)) => format!("Liveness: PASS ({:.3})", s),
+                ("spoof", Some(s)) => format!("Liveness: SPOOF ({:.3})", s),
+                ("error", _) => "Liveness: ERROR".to_string(),
+                _ => "Liveness: disabled".to_string(),
+            };
+            let live_color = match liveness_status {
+                "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
+                "spoof" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+                _ => Scalar::new(200.0, 200.0, 200.0, 0.0),
+            };
+            draw_text(&mut display, 1, &live_text, live_color)?;
 
             draw_text(
                 &mut display,
@@ -242,7 +244,7 @@ pub fn run(
                 )?;
                 highgui::imshow("FacePass Add", &display)?;
             }
-        } else {
+        } else if liveness_allowed {
             print!(
                 "\rFace detected! Confidence: {:.1}% ({}/{})",
                 confidence * 100.0,
@@ -252,7 +254,7 @@ pub fn run(
             io::stdout().flush()?;
 
             // If we have a very good detection, stop early
-            if confidence > 0.98 {
+            if best_feature.is_some() && confidence > 0.98 {
                 break;
             }
         }

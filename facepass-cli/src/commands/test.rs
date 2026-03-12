@@ -2,12 +2,6 @@
 
 use super::get_username;
 use anyhow::Result;
-use opencv::{
-    core::{Point, Rect, Scalar},
-    highgui,
-    imgproc,
-    prelude::*,
-};
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
     camera::Camera,
@@ -16,6 +10,11 @@ use facepass_core::{
     matching::find_best_match,
     recognition::{mat_to_vec, FaceRecognizer},
     storage::FaceStorage,
+};
+use opencv::{
+    core::{Point, Rect, Scalar},
+    highgui, imgproc,
+    prelude::*,
 };
 use std::io::{self, Write};
 
@@ -55,10 +54,11 @@ pub fn run(
         match AntiSpoofDetector::new(&config.models.anti_spoof_path, &config.anti_spoof) {
             Ok(d) => {
                 println!(
-                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{})",
+                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{}, scale: {:.1})",
                     config.anti_spoof.threshold,
                     config.anti_spoof.input_size,
-                    config.anti_spoof.input_size
+                    config.anti_spoof.input_size,
+                    config.anti_spoof.crop_scale
                 );
                 Some(d)
             }
@@ -141,31 +141,30 @@ pub fn run(
         detected_faces += 1;
         attempts += 1;
 
-        // Align and extract feature
-        let aligned = recognizer.align_crop(&frame, &face_row)?;
-
         let mut liveness_score: Option<f32> = None;
         let mut liveness_status = "disabled";
+        let mut liveness_allowed = true;
         if let Some(ref anti_spoof_detector) = anti_spoof {
-            match anti_spoof_detector.check_liveness(&aligned) {
+            match anti_spoof_detector.check_liveness(&frame, &face_row) {
                 Ok(score) if score >= config.anti_spoof.threshold => {
                     liveness_score = Some(score);
                     liveness_status = "pass";
                     if verbose {
-                        eprintln!("Liveness passed on frame {} (score: {:.3})", frame_idx, score);
+                        eprintln!(
+                            "Liveness passed on frame {} (score: {:.3})",
+                            frame_idx, score
+                        );
                     }
                 }
                 Ok(score) => {
                     spoof_frames += 1;
                     liveness_score = Some(score);
                     liveness_status = "spoof";
+                    liveness_allowed = false;
                     if !debug {
                         print!(
                             "\r! Spoof detected #{} (score: {:.3}) ({}/{})",
-                            spoof_frames,
-                            score,
-                            frame_idx,
-                            frames
+                            spoof_frames, score, frame_idx, frames
                         );
                         io::stdout().flush()?;
                     }
@@ -173,6 +172,7 @@ pub fn run(
                 Err(e) => {
                     liveness_errors += 1;
                     liveness_status = "error";
+                    liveness_allowed = false;
                     if verbose {
                         eprintln!("\rLiveness error on frame {}: {}", frame_idx, e);
                     }
@@ -183,41 +183,44 @@ pub fn run(
             }
         }
 
-        let feature_mat = recognizer.extract_feature(&aligned)?;
-        let feature = mat_to_vec(&feature_mat)?;
-
         // Match against registered faces
         let mut match_label: Option<String> = None;
         let mut match_score: Option<f64> = None;
-        match find_best_match(&feature, &face_data, threshold) {
-            Ok(Some(m)) => {
-                matches += 1;
-                match_label = Some(m.face_data.label.clone());
-                match_score = Some(m.similarity);
-                if !debug {
-                    print!(
-                        "\r✓ Match #{}: {} (similarity: {:.2}%) ({}/{})",
-                        matches,
-                        m.face_data.label,
-                        m.similarity * 100.0,
-                        frame_idx,
-                        frames
-                    );
+        if liveness_allowed {
+            let aligned = recognizer.align_crop(&frame, &face_row)?;
+            let feature_mat = recognizer.extract_feature(&aligned)?;
+            let feature = mat_to_vec(&feature_mat)?;
+
+            match find_best_match(&feature, &face_data, threshold) {
+                Ok(Some(m)) => {
+                    matches += 1;
+                    match_label = Some(m.face_data.label.clone());
+                    match_score = Some(m.similarity);
+                    if !debug {
+                        print!(
+                            "\r✓ Match #{}: {} (similarity: {:.2}%) ({}/{})",
+                            matches,
+                            m.face_data.label,
+                            m.similarity * 100.0,
+                            frame_idx,
+                            frames
+                        );
+                    }
                 }
-            }
-            Ok(None) => {
-                if !debug {
-                    print!(
-                        "\r✗ No match (best < {:.0}%) ({}/{})",
-                        threshold * 100.0,
-                        frame_idx,
-                        frames
-                    );
+                Ok(None) => {
+                    if !debug {
+                        print!(
+                            "\r✗ No match (best < {:.0}%) ({}/{})",
+                            threshold * 100.0,
+                            frame_idx,
+                            frames
+                        );
+                    }
                 }
-            }
-            Err(e) => {
-                if verbose {
-                    eprintln!("\rMatch error: {}", e);
+                Err(e) => {
+                    if verbose {
+                        eprintln!("\rMatch error: {}", e);
+                    }
                 }
             }
         }

@@ -108,9 +108,7 @@ pub fn get_current_user() -> Option<String> {
     }
 
     // Fall back to USER or LOGNAME
-    env::var("USER")
-        .or_else(|_| env::var("LOGNAME"))
-        .ok()
+    env::var("USER").or_else(|_| env::var("LOGNAME")).ok()
 }
 
 /// Convert UID to username
@@ -154,10 +152,7 @@ pub fn check_camera_access(device: &str) -> Result<()> {
 
             // Check if it's a character device
             if mode & 0o170000 != 0o020000 {
-                return Err(Error::Camera(format!(
-                    "Not a character device: {}",
-                    device
-                )));
+                return Err(Error::Camera(format!("Not a character device: {}", device)));
             }
 
             Ok(())

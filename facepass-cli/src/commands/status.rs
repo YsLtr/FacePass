@@ -50,10 +50,11 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
     print!("  Anti-spoofing: ");
     if config.anti_spoof.enabled {
         println!(
-            "✓ Enabled (threshold: {:.2}, input: {}x{})",
+            "✓ Enabled (threshold: {:.2}, input: {}x{}, scale: {:.1})",
             config.anti_spoof.threshold,
             config.anti_spoof.input_size,
-            config.anti_spoof.input_size
+            config.anti_spoof.input_size,
+            config.anti_spoof.crop_scale
         );
     } else {
         println!("✗ Disabled");

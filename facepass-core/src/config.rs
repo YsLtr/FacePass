@@ -250,16 +250,10 @@ fn default_yunet_path() -> String {
     format!("{}/face_detection_yunet_2023mar.onnx", DEFAULT_MODELS_DIR)
 }
 fn default_sface_path() -> String {
-    format!(
-        "{}/face_recognition_sface_2021dec.onnx",
-        DEFAULT_MODELS_DIR
-    )
+    format!("{}/face_recognition_sface_2021dec.onnx", DEFAULT_MODELS_DIR)
 }
 fn default_anti_spoof_path() -> String {
-    format!(
-        "{}/anti_spoof_minifasnetv2se.onnx",
-        DEFAULT_MODELS_DIR
-    )
+    "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx".to_string()
 }
 
 /// Anti-spoofing configuration
@@ -276,6 +270,10 @@ pub struct AntiSpoofConfig {
     /// Input size for anti-spoofing model (width = height)
     #[serde(default = "default_anti_spoof_input_size")]
     pub input_size: i32,
+
+    /// Crop scale factor for the face ROI before inference
+    #[serde(default = "default_anti_spoof_crop_scale")]
+    pub crop_scale: f32,
 }
 
 impl Default for AntiSpoofConfig {
@@ -284,6 +282,7 @@ impl Default for AntiSpoofConfig {
             enabled: default_anti_spoof_enabled(),
             threshold: default_liveness_threshold(),
             input_size: default_anti_spoof_input_size(),
+            crop_scale: default_anti_spoof_crop_scale(),
         }
     }
 }
@@ -296,6 +295,9 @@ fn default_liveness_threshold() -> f32 {
 }
 fn default_anti_spoof_input_size() -> i32 {
     80
+}
+fn default_anti_spoof_crop_scale() -> f32 {
+    2.7
 }
 
 /// Storage configuration
@@ -357,7 +359,8 @@ impl Config {
             ))
         })?;
 
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+        config.migrate_anti_spoof_model_path();
         Ok(config)
     }
 
@@ -409,6 +412,13 @@ impl Config {
         PathBuf::from(&self.storage.data_dir).join(username)
     }
 
+    fn migrate_anti_spoof_model_path(&mut self) {
+        let legacy_path = format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
+        if self.models.anti_spoof_path == legacy_path {
+            self.models.anti_spoof_path = default_anti_spoof_path();
+        }
+    }
+
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
         // Check model files exist
@@ -433,7 +443,8 @@ impl Config {
             ));
         }
 
-        if self.recognition.similarity_threshold < 0.0 || self.recognition.similarity_threshold > 1.0
+        if self.recognition.similarity_threshold < 0.0
+            || self.recognition.similarity_threshold > 1.0
         {
             return Err(Error::Config(
                 "similarity_threshold must be between 0.0 and 1.0".to_string(),
@@ -449,6 +460,12 @@ impl Config {
         if self.anti_spoof.input_size <= 0 || self.anti_spoof.input_size > 512 {
             return Err(Error::Config(
                 "anti_spoof.input_size must be between 1 and 512".to_string(),
+            ));
+        }
+
+        if self.anti_spoof.crop_scale <= 0.0 || self.anti_spoof.crop_scale > 10.0 {
+            return Err(Error::Config(
+                "anti_spoof.crop_scale must be between 0.0 and 10.0".to_string(),
             ));
         }
 
@@ -509,5 +526,32 @@ mod tests {
         assert!(err
             .to_string()
             .contains("anti_spoof.threshold must be between 0.0 and 1.0"));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_anti_spoof_crop_scale() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.anti_spoof.crop_scale = 0.0;
+
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err
+            .to_string()
+            .contains("anti_spoof.crop_scale must be between 0.0 and 10.0"));
+    }
+
+    #[test]
+    fn test_load_migrates_legacy_anti_spoof_model_path() {
+        let mut config = Config::default();
+        config.models.anti_spoof_path =
+            format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
+
+        let loaded = Config::load(tmp.path()).unwrap();
+        assert_eq!(loaded.models.anti_spoof_path, default_anti_spoof_path());
     }
 }

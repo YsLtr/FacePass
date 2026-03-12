@@ -10,8 +10,10 @@ mod commands;
 #[command(author = "ysltr")]
 #[command(version)]
 #[command(about = "Linux face recognition authentication management tool")]
-#[command(long_about = "FacePass is a Linux PAM module that provides face recognition \
-                        authentication for sudo, polkit, and other privilege escalation tools.")]
+#[command(
+    long_about = "FacePass is a Linux PAM module that provides face recognition \
+                        authentication for sudo, polkit, and other privilege escalation tools."
+)]
 struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
@@ -22,7 +24,12 @@ struct Cli {
     debug: bool,
 
     /// Path to configuration file
-    #[arg(short, long, global = true, default_value = "~/.config/facepass/config.toml")]
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = "~/.config/facepass/config.toml"
+    )]
     config: String,
 
     #[command(subcommand)]
@@ -155,7 +162,9 @@ fn main() {
             }
             commands::test::run(&config_path, user, frames, cli.verbose, cli.debug)
         }
-        Commands::Config { show, set } => commands::config::run(&config_path, show, set, cli.verbose),
+        Commands::Config { show, set } => {
+            commands::config::run(&config_path, show, set, cli.verbose)
+        }
         Commands::Cameras => commands::cameras::run(cli.verbose),
         Commands::Status => commands::status::run(&config_path, cli.verbose),
         Commands::Enable => {
