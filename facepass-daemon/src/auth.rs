@@ -16,6 +16,8 @@ use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+const MAX_ANTI_SPOOF_ERRORS: u32 = 3;
+
 /// Perform face authentication
 pub async fn authenticate(config: &Arc<Config>, request: &AuthRequest) -> AuthResponse {
     // Run in blocking task since OpenCV operations are synchronous
@@ -71,12 +73,12 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
         Err(e) => return AuthResponse::failure(format!("Recognizer error: {}", e)),
     };
 
-    let anti_spoof = if config.anti_spoof.enabled {
+    let mut anti_spoof = if config.anti_spoof.enabled {
         match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
             Ok(d) => Some(d),
             Err(e) => {
                 warn!(
-                    "Anti-spoofing unavailable, falling back to face recognition only: {}",
+                    "Anti-spoofing unavailable at startup, will retry during authentication: {}",
                     e
                 );
                 None
@@ -100,6 +102,7 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
     let mut valid_frame_count = 0u32;
     let mut frame_count = 0u32;
     let mut best_match_info: Option<(f64, String)> = None;
+    let mut anti_spoof_errors = 0u32;
 
     info!(
         "Starting face recognition (timeout: {}s, max_frames: {}, valid_frames: {}, consecutive_match_frames: {}, stop_on_valid_frames: {})",
@@ -118,6 +121,28 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
             Ok(f) => f,
             Err(_) => continue,
         };
+
+        if config.anti_spoof.enabled
+            && anti_spoof.is_none()
+            && anti_spoof_errors < MAX_ANTI_SPOOF_ERRORS
+        {
+            match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
+                Ok(detector) => {
+                    anti_spoof = Some(detector);
+                    warn!("Anti-spoof detector restarted successfully");
+                }
+                Err(e) => {
+                    anti_spoof_errors += 1;
+                    warn!(
+                        "Anti-spoof restart failed ({}/{}): {}",
+                        anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
+                    );
+                    if anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
+                        return AuthResponse::failure("Anti-spoof error");
+                    }
+                }
+            }
+        }
 
         // Detect face
         let faces = match detector.detect_raw(&frame) {
@@ -168,7 +193,15 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
                     continue;
                 }
                 Err(e) => {
-                    warn!("Liveness check error: {}", e);
+                    anti_spoof_errors += 1;
+                    warn!(
+                        "Anti-spoof error ({}/{}), restarting detector: {}",
+                        anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
+                    );
+                    anti_spoof = None;
+                    if anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
+                        return AuthResponse::failure("Anti-spoof error");
+                    }
                     consecutive_matches = 0;
                     continue;
                 }

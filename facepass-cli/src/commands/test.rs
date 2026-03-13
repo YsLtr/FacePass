@@ -20,6 +20,8 @@ use opencv::{
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
+const MAX_ANTI_SPOOF_ERRORS: u32 = 3;
+
 #[derive(Default)]
 struct TestStats {
     total_frames: u32,
@@ -31,7 +33,7 @@ struct TestStats {
     matched_frames: u32,
     unmatched_frames: u32,
     spoof_frames: u32,
-    liveness_errors: u32,
+    anti_spoof_errors: u32,
     max_consecutive_matches: u32,
 }
 
@@ -100,7 +102,7 @@ pub fn run(
             }
             Err(e) => {
                 eprintln!(
-                    "Warning: anti-spoofing unavailable, falling back to face recognition only: {}",
+                    "Warning: anti-spoofing unavailable at startup, will retry during test: {}",
                     e
                 );
                 None
@@ -161,6 +163,29 @@ pub fn run(
         }
         frame_idx += 1;
         stats.total_frames += 1;
+
+        if config.anti_spoof.enabled
+            && anti_spoof.is_none()
+            && stats.anti_spoof_errors < MAX_ANTI_SPOOF_ERRORS
+        {
+            match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
+                Ok(detector) => {
+                    anti_spoof = Some(detector);
+                    eprintln!("Warning: anti-spoof detector restarted successfully");
+                }
+                Err(e) => {
+                    stats.anti_spoof_errors += 1;
+                    eprintln!(
+                        "Warning: anti-spoof restart failed ({}/{}): {}",
+                        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
+                    );
+                    if stats.anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
+                        stop_reason = "anti_spoof_error".to_string();
+                        break;
+                    }
+                }
+            }
+        }
 
         // Read frame
         let frame = match camera.read_frame() {
@@ -249,6 +274,7 @@ pub fn run(
         let mut liveness_score: Option<f32> = None;
         let mut liveness_status = "disabled";
         let mut liveness_allowed = true;
+        let mut fatal_anti_spoof_error = false;
         if let Some(ref anti_spoof_detector) = anti_spoof {
             match anti_spoof_detector.check_liveness(
                 &frame,
@@ -313,18 +339,28 @@ pub fn run(
                     }
                 }
                 Err(e) => {
-                    stats.liveness_errors += 1;
+                    stats.anti_spoof_errors += 1;
                     liveness_status = "error";
                     liveness_allowed = false;
                     consecutive_matches = 0;
                     if verbose {
-                        eprintln!("\rLiveness error on frame {}: {}", frame_idx, e);
+                        eprintln!("\rAnti-spoof error on frame {}: {}", frame_idx, e);
                     }
-                    // Avoid spamming the terminal if the model is incompatible.
-                    eprintln!("Warning: disabling anti-spoofing after error: {}", e);
+                    eprintln!(
+                        "Warning: anti-spoof error ({}/{}), restarting detector: {}",
+                        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
+                    );
                     anti_spoof = None;
+                    if stats.anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
+                        stop_reason = "anti_spoof_error".to_string();
+                        fatal_anti_spoof_error = true;
+                    }
                 }
             }
+        }
+
+        if fatal_anti_spoof_error {
+            break;
         }
 
         if !liveness_allowed && liveness_status == "invalid" {
@@ -391,11 +427,11 @@ pub fn run(
             )?;
 
             let live_text = match (liveness_status, liveness_score) {
-                ("pass", Some(s)) => format!("Liveness: PASS ({:.3})", s),
-                ("spoof", Some(s)) => format!("Liveness: SPOOF ({:.3})", s),
-                ("invalid", _) => "Liveness: INVALID FACE".to_string(),
-                ("error", _) => "Liveness: ERROR".to_string(),
-                _ => "Liveness: disabled".to_string(),
+                ("pass", Some(s)) => format!("Anti-spoof: PASS ({:.3})", s),
+                ("spoof", Some(s)) => format!("Anti-spoof: SPOOF ({:.3})", s),
+                ("invalid", _) => "Anti-spoof: INVALID FACE".to_string(),
+                ("error", _) => "Anti-spoof: ERROR".to_string(),
+                _ => "Anti-spoof: disabled".to_string(),
             };
             let live_color = match liveness_status {
                 "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
@@ -437,7 +473,7 @@ pub fn run(
                     stats.total_frames,
                     stats.invalid_face_frames,
                     stats.no_face_frames,
-                    stats.liveness_errors + stats.frame_errors
+                    stats.anti_spoof_errors + stats.frame_errors
                 ),
                 Scalar::new(180.0, 180.0, 180.0, 0.0),
             )?;
@@ -465,7 +501,9 @@ pub fn run(
     let valid_frame_threshold_met = stats.valid_frames >= required_valid_frames;
     let consecutive_threshold_met =
         stats.max_consecutive_matches >= consecutive_match_frames;
-    let result_valid = valid_frame_threshold_met && consecutive_threshold_met;
+    let anti_spoof_failed = stop_reason == "anti_spoof_error";
+    let result_valid =
+        valid_frame_threshold_met && consecutive_threshold_met && !anti_spoof_failed;
 
     println!("\n");
     println!("Test complete!");
@@ -482,7 +520,10 @@ pub fn run(
     println!("  Unmatched valid frames: {}", stats.unmatched_frames);
     println!("  Spoof frames: {}", stats.spoof_frames);
     println!("  Frame errors: {}", stats.frame_errors);
-    println!("  Liveness errors: {}", stats.liveness_errors);
+    println!(
+        "  Anti-spoof errors: {} / {}",
+        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS
+    );
     println!("  Valid frame rate: {:.1}%", stats.valid_frame_rate());
     println!("  Match success rate: {:.1}%", stats.match_success_rate());
     println!(
@@ -523,7 +564,7 @@ pub fn run(
         frames,
         if debug { " (ignored in debug mode)" } else { "" }
     );
-    println!("  Stop reason: {}", stop_reason);
+    println!("  End reason: {}", stop_reason);
 
     Ok(())
 }

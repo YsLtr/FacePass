@@ -81,11 +81,7 @@ pub fn run(
                 Some(d)
             }
             Err(e) => {
-                eprintln!(
-                    "Warning: anti-spoofing unavailable, falling back to face add only: {}",
-                    e
-                );
-                None
+                return Err(anyhow!("Anti-spoof error: {}", e));
             }
         }
     } else {
@@ -260,8 +256,10 @@ pub fn run(
                 Err(e) => {
                     liveness_status = "error";
                     liveness_allowed = false;
-                    eprintln!("Warning: disabling anti-spoofing after error: {}", e);
-                    anti_spoof = None;
+                    if debug {
+                        highgui::destroy_window("FacePass Add")?;
+                    }
+                    return Err(anyhow!("Anti-spoof error: {}", e));
                 }
             }
         }
@@ -293,11 +291,11 @@ pub fn run(
             )?;
 
             let live_text = match (liveness_status, liveness_score) {
-                ("pass", Some(s)) => format!("Liveness: PASS ({:.3})", s),
-                ("spoof", Some(s)) => format!("Liveness: SPOOF ({:.3})", s),
-                ("invalid", _) => "Liveness: INVALID FACE".to_string(),
-                ("error", _) => "Liveness: ERROR".to_string(),
-                _ => "Liveness: disabled".to_string(),
+                ("pass", Some(s)) => format!("Anti-spoof: PASS ({:.3})", s),
+                ("spoof", Some(s)) => format!("Anti-spoof: SPOOF ({:.3})", s),
+                ("invalid", _) => "Anti-spoof: INVALID FACE".to_string(),
+                ("error", _) => "Anti-spoof: ERROR".to_string(),
+                _ => "Anti-spoof: disabled".to_string(),
             };
             let live_color = match liveness_status {
                 "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
