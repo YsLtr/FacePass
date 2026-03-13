@@ -49,13 +49,17 @@ pub struct CommandInput {
 
 impl CommandInput {
     pub fn capture_single_keys() -> anyhow::Result<Self> {
+        Self::capture(true)
+    }
+
+    fn capture(raw_mode: bool) -> anyhow::Result<Self> {
         let fd = libc::STDIN_FILENO;
         let original_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if original_flags < 0 {
             return Err(io::Error::last_os_error().into());
         }
 
-        let original_termios = if unsafe { libc::isatty(fd) } == 1 {
+        let original_termios = if raw_mode && unsafe { libc::isatty(fd) } == 1 {
             let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
             if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
                 return Err(io::Error::last_os_error().into());

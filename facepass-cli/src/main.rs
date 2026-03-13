@@ -119,6 +119,7 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+    let uses_view_runtime = cli.view && matches!(&cli.command, Commands::Add { .. } | Commands::Test { .. });
 
     // Expand ~ to home directory
     let config_path = expand_tilde(&cli.config);
@@ -183,7 +184,14 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
+        if uses_view_runtime {
+            immediate_exit(1);
+        }
         std::process::exit(1);
+    }
+
+    if uses_view_runtime {
+        immediate_exit(0);
     }
 }
 
@@ -195,4 +203,16 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn immediate_exit(code: i32) -> ! {
+    use std::io::Write;
+
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
+    // OpenCV HighGUI with the Qt backend is unstable during process teardown here.
+    unsafe {
+        libc::_exit(code);
+    }
 }
