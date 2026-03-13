@@ -30,19 +30,32 @@ pub fn run(config_path: &str) -> Result<()> {
     }
 
     println!("\nModels:");
-    print!("  YuNet: ");
-    if Path::new(&config.models.yunet_path).exists() {
-        println!("OK Found");
-    } else {
-        println!("X Not found: {}", config.models.yunet_path);
-    }
+    println!(
+        "  YuNet: {} | input: {}x{} | score: {:.2} | nms: {:.2}",
+        if Path::new(&config.models.yunet_path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        config.detection.input_width,
+        config.detection.input_height,
+        config.detection.score_threshold,
+        config.detection.nms_threshold
+    );
+    println!("    {}", config.models.yunet_path);
 
-    print!("  SFace: ");
-    if Path::new(&config.models.sface_path).exists() {
-        println!("OK Found");
-    } else {
-        println!("X Not found: {}", config.models.sface_path);
-    }
+    println!(
+        "  SFace: {} | similarity: {:.2} | max/user: {} | consecutive: {}",
+        if Path::new(&config.models.sface_path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        config.recognition.similarity_threshold,
+        config.recognition.max_faces_per_user,
+        config.recognition.consecutive_match_frames
+    );
+    println!("    {}", config.models.sface_path);
 
     print!("  Anti-spoofing: ");
     if config.anti_spoof.enabled {
