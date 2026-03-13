@@ -13,7 +13,7 @@ pub fn run(config_path: &str) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
 
-    let config = Config::load_with_fallback(config_path)?;
+    let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
 
     print!("Daemon: ");
     if is_daemon_running(&config.daemon.socket_path) {
@@ -131,8 +131,8 @@ pub fn run(config_path: &str) -> Result<()> {
 
     println!("\nConfiguration:");
     print!("  Config file: ");
-    if Path::new(config_path).exists() {
-        println!("OK {}", config_path);
+    if let Some(path) = config_source {
+        println!("OK {}", path.display());
     } else {
         println!("X Not found (using defaults)");
     }
