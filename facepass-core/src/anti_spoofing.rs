@@ -232,7 +232,7 @@ fn crop_face(image: &Mat, bbox: [f32; 4], scale_limit: f32, out_size: i32) -> Re
         bbox,
         scale_limit,
     )?;
-    let roi = Rect::new(rect.0, rect.1, rect.2, rect.3);
+    let roi = normalize_roi_rect(image.cols(), image.rows(), rect)?;
     let face_roi = image.roi(roi)?;
     let mut cropped = Mat::default();
     face_roi.copy_to(&mut cropped)?;
@@ -248,6 +248,40 @@ fn crop_face(image: &Mat, bbox: [f32; 4], scale_limit: f32, out_size: i32) -> Re
     )?;
 
     Ok(resized)
+}
+
+fn normalize_roi_rect(
+    image_w: i32,
+    image_h: i32,
+    rect: (i32, i32, i32, i32),
+) -> Result<Rect> {
+    if image_w <= 0 || image_h <= 0 {
+        return Err(Error::AntiSpoofing(
+            "Cannot crop anti-spoof ROI from an empty frame".to_string(),
+        ));
+    }
+
+    let (x, y, width, height) = rect;
+    if width <= 0 || height <= 0 {
+        return Err(Error::AntiSpoofing(format!(
+            "Invalid anti-spoof ROI dimensions: x={}, y={}, width={}, height={}",
+            x, y, width, height
+        )));
+    }
+
+    let max_x = image_w.saturating_sub(1);
+    let max_y = image_h.saturating_sub(1);
+    let clamped_x = x.clamp(0, max_x);
+    let clamped_y = y.clamp(0, max_y);
+    let clamped_width = width.min(image_w - clamped_x).max(1);
+    let clamped_height = height.min(image_h - clamped_y).max(1);
+
+    Ok(Rect::new(
+        clamped_x,
+        clamped_y,
+        clamped_width,
+        clamped_height,
+    ))
 }
 
 fn compute_model_crop_rect(
@@ -564,5 +598,14 @@ mod tests {
         let size = cropped.size().unwrap();
         assert_eq!(size.width, 80);
         assert_eq!(size.height, 80);
+    }
+
+    #[test]
+    fn test_normalize_roi_rect_clamps_rounded_overflow() {
+        let roi = normalize_roi_rect(640, 480, (1, 0, 640, 480)).unwrap();
+        assert_eq!(roi.x, 1);
+        assert_eq!(roi.y, 0);
+        assert_eq!(roi.width, 639);
+        assert_eq!(roi.height, 480);
     }
 }
