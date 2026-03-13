@@ -5,10 +5,10 @@
 # Camera device path (use `ls /dev/video*` to find available devices)
 device = "/dev/video0"
 
-# Authentication timeout in seconds
+# Authentication timeout in seconds (0 = unlimited)
 timeout = 5
 
-# Maximum frames to try before giving up
+# Maximum frames to try before giving up (0 = unlimited)
 max_frames = 30
 
 # Frame width (0 = auto)
@@ -39,10 +39,11 @@ max_faces_per_user = 5
 # Number of consecutive matched frames required
 consecutive_match_frames = 1
 
-# Minimum number of valid recognition frames required per attempt
+# Minimum number of valid recognition frames required per attempt (0 = disabled)
 valid_frames = 5
 
 # Whether to stop immediately once valid_frames has been reached
+# Ignored when valid_frames = 0
 stop_on_valid_frames = true
 
 # Only faces that are fully inside the frame and can fully cover the

@@ -120,14 +120,24 @@ pub fn run(
             width, height, config.video.frame_width, config.video.frame_height
         );
     }
+    let enforce_frame_limit = !debug && frames > 0;
+    let enforce_timeout = !debug && config.video.timeout > 0;
     println!(
         "Frame limit: {}{}",
-        frames,
+        if frames == 0 {
+            "unlimited".to_string()
+        } else {
+            frames.to_string()
+        },
         if debug { " (ignored in debug mode)" } else { "" }
     );
     println!(
-        "Timeout: {}s{}",
-        config.video.timeout,
+        "Timeout: {}{}",
+        if config.video.timeout == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{}s", config.video.timeout)
+        },
         if debug { " (ignored in debug mode)" } else { "" }
     );
     if debug {
@@ -141,7 +151,8 @@ pub fn run(
     let threshold = config.recognition.similarity_threshold;
     let required_valid_frames = config.recognition.valid_frames;
     let consecutive_match_frames = config.recognition.consecutive_match_frames;
-    let stop_on_valid_frames = config.recognition.stop_on_valid_frames && !debug;
+    let stop_on_valid_frames =
+        config.recognition.stop_on_valid_frames && !debug && required_valid_frames > 0;
     let timeout_duration = Duration::from_secs(config.video.timeout as u64);
     let started_at = Instant::now();
     let mut stop_reason = "user_stopped".to_string();
@@ -152,12 +163,12 @@ pub fn run(
 
     let mut frame_idx = 0u32;
     loop {
-        if !debug && started_at.elapsed() >= timeout_duration {
+        if enforce_timeout && started_at.elapsed() >= timeout_duration {
             stop_reason = "timeout_reached".to_string();
             break;
         }
 
-        if !debug && frame_idx >= frames {
+        if enforce_frame_limit && frame_idx >= frames {
             stop_reason = "frame_limit_reached".to_string();
             break;
         }
@@ -502,8 +513,10 @@ pub fn run(
     let consecutive_threshold_met =
         stats.max_consecutive_matches >= consecutive_match_frames;
     let anti_spoof_failed = stop_reason == "anti_spoof_error";
-    let result_valid =
-        valid_frame_threshold_met && consecutive_threshold_met && !anti_spoof_failed;
+    let valid_frame_requirement_enabled = required_valid_frames > 0;
+    let result_valid = (!valid_frame_requirement_enabled || valid_frame_threshold_met)
+        && consecutive_threshold_met
+        && !anti_spoof_failed;
 
     println!("\n");
     println!("Test complete!");
@@ -526,12 +539,19 @@ pub fn run(
     );
     println!("  Valid frame rate: {:.1}%", stats.valid_frame_rate());
     println!("  Match success rate: {:.1}%", stats.match_success_rate());
-    println!(
-        "  Valid frame threshold: {} / {} ({})",
-        stats.valid_frames,
-        required_valid_frames,
-        if valid_frame_threshold_met { "met" } else { "not met" }
-    );
+    if valid_frame_requirement_enabled {
+        println!(
+            "  Valid frame threshold: {} / {} ({})",
+            stats.valid_frames,
+            required_valid_frames,
+            if valid_frame_threshold_met { "met" } else { "not met" }
+        );
+    } else {
+        println!(
+            "  Valid frame threshold: disabled (valid_frames = 0, observed {})",
+            stats.valid_frames
+        );
+    }
     println!(
         "  Consecutive match threshold: {} / {} ({})",
         stats.max_consecutive_matches,
@@ -548,20 +568,30 @@ pub fn run(
     );
     println!(
         "  Stop on valid frames: {}",
-        if debug {
+        if required_valid_frames == 0 {
+            "false (ignored because valid_frames = 0)".to_string()
+        } else if debug {
             "false (ignored in debug mode)".to_string()
         } else {
             stop_on_valid_frames.to_string()
         }
     );
     println!(
-        "  Timeout: {}s{}",
-        config.video.timeout,
+        "  Timeout: {}{}",
+        if config.video.timeout == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{}s", config.video.timeout)
+        },
         if debug { " (ignored in debug mode)" } else { "" }
     );
     println!(
         "  Frame limit: {}{}",
-        frames,
+        if frames == 0 {
+            "unlimited".to_string()
+        } else {
+            frames.to_string()
+        },
         if debug { " (ignored in debug mode)" } else { "" }
     );
     println!("  End reason: {}", stop_reason);

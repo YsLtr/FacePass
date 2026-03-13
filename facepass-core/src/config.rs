@@ -26,11 +26,11 @@ pub struct VideoConfig {
     #[serde(default = "default_device")]
     pub device: String,
 
-    /// Authentication timeout in seconds
+    /// Authentication timeout in seconds (0 = unlimited)
     #[serde(default = "default_timeout")]
     pub timeout: u32,
 
-    /// Maximum frames to try
+    /// Maximum frames to try (0 = unlimited)
     #[serde(default = "default_max_frames")]
     pub max_frames: u32,
 
@@ -130,11 +130,12 @@ pub struct RecognitionConfig {
     #[serde(default = "default_consecutive_match_frames")]
     pub consecutive_match_frames: u32,
 
-    /// Minimum number of valid recognition frames required per attempt
+    /// Minimum number of valid recognition frames required per attempt (0 = disabled)
     #[serde(default = "default_valid_frames")]
     pub valid_frames: u32,
 
-    /// Whether to stop immediately once valid_frames has been reached
+    /// Whether to stop immediately once valid_frames has been reached.
+    /// Ignored when valid_frames = 0.
     #[serde(default = "default_stop_on_valid_frames")]
     pub stop_on_valid_frames: bool,
 
@@ -642,20 +643,19 @@ impl Config {
             ));
         }
 
-        if self.recognition.valid_frames == 0 {
-            return Err(Error::Config(
-                "recognition.valid_frames must be greater than 0".to_string(),
-            ));
-        }
-
-        if self.video.max_frames < self.recognition.valid_frames {
+        if self.video.max_frames != 0
+            && self.recognition.valid_frames != 0
+            && self.video.max_frames < self.recognition.valid_frames
+        {
             return Err(Error::Config(format!(
                 "video.max_frames ({}) must be greater than or equal to recognition.valid_frames ({})",
                 self.video.max_frames, self.recognition.valid_frames
             )));
         }
 
-        if self.recognition.consecutive_match_frames > self.recognition.valid_frames {
+        if self.recognition.valid_frames != 0
+            && self.recognition.consecutive_match_frames > self.recognition.valid_frames
+        {
             return Err(Error::Config(format!(
                 "recognition.consecutive_match_frames ({}) must be less than or equal to recognition.valid_frames ({})",
                 self.recognition.consecutive_match_frames, self.recognition.valid_frames
@@ -734,6 +734,33 @@ mod tests {
         assert!(err
             .to_string()
             .contains("anti_spoof.v2_crop_scale must be between 0.0 and 10.0"));
+    }
+
+    #[test]
+    fn test_validate_allows_unlimited_frame_and_valid_frame_settings() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.video.max_frames = 0;
+        config.recognition.valid_frames = 0;
+        config.recognition.consecutive_match_frames = 10;
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_max_frames_lower_than_valid_frames_when_limited() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.video.max_frames = 10;
+        config.recognition.valid_frames = 20;
+
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err
+            .to_string()
+            .contains("video.max_frames (10) must be greater than or equal to recognition.valid_frames (20)"));
     }
 
     #[test]

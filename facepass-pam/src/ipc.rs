@@ -45,9 +45,12 @@ pub fn authenticate(username: &str, source: &str, timeout: u32) -> Result<AuthRe
         .map_err(|e| IpcError(format!("Failed to connect to daemon: {}", e)))?;
 
     // Set timeouts
-    let read_timeout = Duration::from_secs((timeout + 2) as u64);
     stream
-        .set_read_timeout(Some(read_timeout))
+        .set_read_timeout(if timeout == 0 {
+            None
+        } else {
+            Some(Duration::from_secs((timeout + 2) as u64))
+        })
         .map_err(|e| IpcError(format!("Failed to set timeout: {}", e)))?;
 
     stream

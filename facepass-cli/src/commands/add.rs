@@ -103,7 +103,7 @@ pub fn run(
     }
 
     // Try to capture a good face
-    let max_attempts = if debug {
+    let max_attempts = if debug || config.video.max_frames == 0 {
         u32::MAX
     } else {
         config.video.max_frames

@@ -91,8 +91,11 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
     let threshold = config.recognition.similarity_threshold;
     let consecutive_match_frames = config.recognition.consecutive_match_frames;
     let required_valid_frames = config.recognition.valid_frames;
-    let stop_on_valid_frames = config.recognition.stop_on_valid_frames;
+    let stop_on_valid_frames =
+        config.recognition.stop_on_valid_frames && required_valid_frames > 0;
     let max_frames = config.video.max_frames;
+    let enforce_timeout = timeout > 0;
+    let enforce_frame_limit = max_frames > 0;
 
     let start_time = Instant::now();
     let timeout_duration = Duration::from_secs(timeout as u64);
@@ -113,7 +116,9 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
         stop_on_valid_frames
     );
 
-    while start_time.elapsed() < timeout_duration && frame_count < max_frames {
+    while (!enforce_timeout || start_time.elapsed() < timeout_duration)
+        && (!enforce_frame_limit || frame_count < max_frames)
+    {
         frame_count += 1;
 
         // Read frame
@@ -265,7 +270,7 @@ fn authenticate_sync(config: &Config, username: &str, timeout: u32) -> AuthRespo
         }
     }
 
-    if valid_frame_count < required_valid_frames {
+    if required_valid_frames > 0 && valid_frame_count < required_valid_frames {
         return AuthResponse::failure(format!(
             "Recognition ended with only {} valid frame(s); required at least {}",
             valid_frame_count, required_valid_frames
