@@ -63,8 +63,12 @@ pub fn run(
     debug: bool,
 ) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path)?;
+    let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
     let frames = frames_override.unwrap_or(config.video.max_frames);
+    let config_source_display = config_source
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "built-in defaults".to_string());
 
     if verbose {
         println!("Testing face recognition for user: {}", username);
@@ -82,6 +86,7 @@ pub fn run(
     }
 
     println!("Loaded {} registered face(s)", face_data.len());
+    println!("Config source: {}", colorize(&config_source_display, COLOR_CYAN));
     println!("Initializing camera...\n");
 
     // Initialize components
@@ -156,6 +161,7 @@ pub fn run(
     let timeout_duration = Duration::from_secs(config.video.timeout as u64);
     let started_at = Instant::now();
     let mut stop_reason = "user_stopped".to_string();
+    let mut last_status_width = 0usize;
 
     if debug {
         highgui::named_window("FacePass Test", highgui::WINDOW_AUTOSIZE)?;
@@ -216,8 +222,13 @@ pub fn run(
             Err(_) => {
                 stats.no_face_frames += 1;
                 if !debug {
-                    print!("\rSearching for face... ({}/{})", frame_idx, frames);
-                    io::stdout().flush()?;
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Searching for face... {}",
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 } else {
                     let mut display = frame.try_clone()?;
                     draw_text(
@@ -248,11 +259,14 @@ pub fn run(
                 stats.invalid_face_frames += 1;
                 consecutive_matches = 0;
                 if !debug {
-                    print!(
-                        "\r! Invalid face ({}) ({}/{})",
-                        reason, frame_idx, frames
-                    );
-                    io::stdout().flush()?;
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Invalid face ({}) {}",
+                            reason,
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 } else {
                     let mut display = frame.try_clone()?;
                     draw_faces(&mut display, &faces)?;
@@ -309,11 +323,15 @@ pub fn run(
                     liveness_allowed = false;
                     consecutive_matches = 0;
                     if !debug {
-                        print!(
-                            "\r! Spoof detected #{} (score: {:.3}) ({}/{})",
-                            stats.spoof_frames, score, frame_idx, frames
-                        );
-                        io::stdout().flush()?;
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "Spoof detected #{} (score: {:.3}) {}",
+                                stats.spoof_frames,
+                                score,
+                                format_frame_progress(frame_idx, frames)
+                            ),
+                        )?;
                     }
                 }
                 Err(facepass_core::Error::InvalidFace(reason)) => {
@@ -322,11 +340,14 @@ pub fn run(
                     stats.invalid_face_frames += 1;
                     consecutive_matches = 0;
                     if !debug {
-                        print!(
-                            "\r! Invalid face ({}) ({}/{})",
-                            reason, frame_idx, frames
-                        );
-                        io::stdout().flush()?;
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "Invalid face ({}) {}",
+                                reason,
+                                format_frame_progress(frame_idx, frames)
+                            ),
+                        )?;
                     } else {
                         let mut display = frame.try_clone()?;
                         draw_faces(&mut display, &faces)?;
@@ -395,26 +416,30 @@ pub fn run(
                     match_label = Some(m.face_data.label.clone());
                     match_score = Some(m.similarity);
                     if !debug {
-                        print!(
-                            "\r✓ Match #{}: {} (similarity: {:.2}%) ({}/{})",
-                            stats.matched_frames,
-                            m.face_data.label,
-                            m.similarity * 100.0,
-                            frame_idx,
-                            frames
-                        );
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "Match #{}: {} (similarity: {:.2}%) {}",
+                                stats.matched_frames,
+                                m.face_data.label,
+                                m.similarity * 100.0,
+                                format_frame_progress(frame_idx, frames)
+                            ),
+                        )?;
                     }
                 }
                 Ok(None) => {
                     stats.unmatched_frames += 1;
                     consecutive_matches = 0;
                     if !debug {
-                        print!(
-                            "\r✗ No match (best < {:.0}%) ({}/{})",
-                            threshold * 100.0,
-                            frame_idx,
-                            frames
-                        );
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "No match (best < {:.0}%) {}",
+                                threshold * 100.0,
+                                format_frame_progress(frame_idx, frames)
+                            ),
+                        )?;
                     }
                 }
                 Err(e) => {
@@ -495,8 +520,6 @@ pub fn run(
                 stop_reason = "user_stopped".to_string();
                 break;
             }
-        } else {
-            io::stdout().flush()?;
         }
 
         if stop_on_valid_frames && stats.valid_frames >= required_valid_frames {
@@ -507,6 +530,8 @@ pub fn run(
 
     if debug {
         highgui::destroy_window("FacePass Test")?;
+    } else {
+        clear_status_line(&mut last_status_width)?;
     }
 
     let valid_frame_threshold_met = stats.valid_frames >= required_valid_frames;
@@ -518,31 +543,51 @@ pub fn run(
         && consecutive_threshold_met
         && !anti_spoof_failed;
 
-    println!("\n");
-    println!("Test complete!");
-    println!("  Total frames: {}", stats.total_frames);
-    println!("  Valid frames: {}", stats.valid_frames);
-    println!("  Matched frames: {}", stats.matched_frames);
+    println!();
+    println!("{}", colorize("Test complete!", COLOR_CYAN_BOLD));
     println!(
-        "  Max consecutive matched frames: {}",
-        stats.max_consecutive_matches
+        "  Result validity: {}",
+        colorize(
+            if result_valid { "valid" } else { "invalid" },
+            if result_valid {
+                COLOR_GREEN_BOLD
+            } else {
+                COLOR_RED_BOLD
+            }
+        )
     );
-    println!("  Faces detected: {}", stats.detected_face_frames);
-    println!("  Invalid face frames: {}", stats.invalid_face_frames);
-    println!("  No-face frames: {}", stats.no_face_frames);
-    println!("  Unmatched valid frames: {}", stats.unmatched_frames);
-    println!("  Spoof frames: {}", stats.spoof_frames);
-    println!("  Frame errors: {}", stats.frame_errors);
     println!(
-        "  Anti-spoof errors: {} / {}",
-        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS
+        "  Match success rate: {}",
+        colorize(
+            &format!("{:.1}%", stats.match_success_rate()),
+            rate_color(stats.match_success_rate())
+        )
     );
-    println!("  Valid frame rate: {:.1}%", stats.valid_frame_rate());
-    println!("  Match success rate: {:.1}%", stats.match_success_rate());
+    println!(
+        "  Valid frame rate: {}",
+        colorize(
+            &format!("{:.1}%", stats.valid_frame_rate()),
+            rate_color(stats.valid_frame_rate())
+        )
+    );
+    println!(
+        "  Stop reason: {}",
+        colorize(&stop_reason, stop_reason_color(&stop_reason))
+    );
+    println!("  Config source: {}", colorize(&config_source_display, COLOR_CYAN));
+    println!();
+    println!("{}", colorize("  Thresholds", COLOR_WHITE_BOLD));
     if valid_frame_requirement_enabled {
         println!(
             "  Valid frame threshold: {} / {} ({})",
-            stats.valid_frames,
+            colorize(
+                &stats.valid_frames.to_string(),
+                if valid_frame_threshold_met {
+                    COLOR_GREEN
+                } else {
+                    COLOR_YELLOW
+                }
+            ),
             required_valid_frames,
             if valid_frame_threshold_met { "met" } else { "not met" }
         );
@@ -554,17 +599,20 @@ pub fn run(
     }
     println!(
         "  Consecutive match threshold: {} / {} ({})",
-        stats.max_consecutive_matches,
+        colorize(
+            &stats.max_consecutive_matches.to_string(),
+            if consecutive_threshold_met {
+                COLOR_GREEN
+            } else {
+                COLOR_YELLOW
+            }
+        ),
         consecutive_match_frames,
         if consecutive_threshold_met {
             "met"
         } else {
             "not met"
         }
-    );
-    println!(
-        "  Result validity: {}",
-        if result_valid { "valid" } else { "invalid" }
     );
     println!(
         "  Stop on valid frames: {}",
@@ -594,8 +642,112 @@ pub fn run(
         },
         if debug { " (ignored in debug mode)" } else { "" }
     );
-    println!("  End reason: {}", stop_reason);
+    println!();
+    println!("{}", colorize("  Frame Stats", COLOR_WHITE_BOLD));
+    println!("  Total frames: {}", stats.total_frames);
+    println!(
+        "  Valid frames: {}",
+        colorize(&stats.valid_frames.to_string(), COLOR_GREEN)
+    );
+    println!(
+        "  Matched frames: {}",
+        colorize(&stats.matched_frames.to_string(), COLOR_GREEN)
+    );
+    println!(
+        "  Max consecutive matched frames: {}",
+        colorize(&stats.max_consecutive_matches.to_string(), COLOR_GREEN)
+    );
+    println!(
+        "  Faces detected: {}",
+        colorize(&stats.detected_face_frames.to_string(), COLOR_CYAN)
+    );
+    println!(
+        "  Invalid face frames: {}",
+        colorize(&stats.invalid_face_frames.to_string(), COLOR_YELLOW)
+    );
+    println!(
+        "  No-face frames: {}",
+        colorize(&stats.no_face_frames.to_string(), COLOR_YELLOW)
+    );
+    println!(
+        "  Unmatched valid frames: {}",
+        colorize(&stats.unmatched_frames.to_string(), COLOR_YELLOW)
+    );
+    println!(
+        "  Spoof frames: {}",
+        colorize(&stats.spoof_frames.to_string(), COLOR_RED)
+    );
+    println!(
+        "  Frame errors: {}",
+        colorize(&stats.frame_errors.to_string(), COLOR_RED)
+    );
+    println!(
+        "  Anti-spoof errors: {} / {}",
+        colorize(&stats.anti_spoof_errors.to_string(), COLOR_RED),
+        MAX_ANTI_SPOOF_ERRORS
+    );
 
+    Ok(())
+}
+
+const COLOR_RESET: &str = "\x1b[0m";
+const COLOR_RED: &str = "31";
+const COLOR_RED_BOLD: &str = "1;31";
+const COLOR_GREEN: &str = "32";
+const COLOR_GREEN_BOLD: &str = "1;32";
+const COLOR_YELLOW: &str = "33";
+const COLOR_CYAN: &str = "36";
+const COLOR_CYAN_BOLD: &str = "1;36";
+const COLOR_WHITE_BOLD: &str = "1;37";
+
+fn colorize(text: &str, color: &str) -> String {
+    format!("\x1b[{color}m{text}{COLOR_RESET}")
+}
+
+fn rate_color(rate: f64) -> &'static str {
+    if rate >= 80.0 {
+        COLOR_GREEN_BOLD
+    } else if rate >= 50.0 {
+        COLOR_YELLOW
+    } else {
+        COLOR_RED_BOLD
+    }
+}
+
+fn stop_reason_color(stop_reason: &str) -> &'static str {
+    match stop_reason {
+        "anti_spoof_error" => COLOR_RED_BOLD,
+        "timeout_reached" | "frame_limit_reached" => COLOR_YELLOW,
+        "valid_frame_threshold_reached" => COLOR_GREEN,
+        _ => COLOR_CYAN,
+    }
+}
+
+fn format_frame_progress(current: u32, total: u32) -> String {
+    if total == 0 {
+        format!("({}/unlimited)", current)
+    } else {
+        format!("({}/{})", current, total)
+    }
+}
+
+fn print_status_line(last_width: &mut usize, message: &str) -> Result<()> {
+    let message_width = message.chars().count();
+    let clear_padding = " ".repeat(last_width.saturating_sub(message_width));
+    print!("\r{}{}", message, clear_padding);
+    io::stdout().flush()?;
+    *last_width = message_width;
+    Ok(())
+}
+
+fn clear_status_line(last_width: &mut usize) -> Result<()> {
+    if *last_width == 0 {
+        return Ok(());
+    }
+
+    print!("\r{}\r", " ".repeat(*last_width));
+    io::stdout().flush()?;
+    *last_width = 0;
     Ok(())
 }
 

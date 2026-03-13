@@ -449,15 +449,29 @@ impl Config {
         Ok(config)
     }
 
+    /// Load configuration from file and return the resolved source path.
+    pub fn load_with_source<P: AsRef<Path>>(path: P) -> Result<(Self, Option<PathBuf>)> {
+        let path = path.as_ref();
+        Ok((Self::load(path)?, Some(path.to_path_buf())))
+    }
+
     /// Load configuration from a preferred path, then current workspace, then
     /// user/system defaults.
     pub fn load_with_fallback<P: AsRef<Path>>(preferred_path: P) -> Result<Self> {
+        Ok(Self::load_with_fallback_and_source(preferred_path)?.0)
+    }
+
+    /// Load configuration from a preferred path, then current workspace, then
+    /// user/system defaults, and return the resolved source path if any.
+    pub fn load_with_fallback_and_source<P: AsRef<Path>>(
+        preferred_path: P,
+    ) -> Result<(Self, Option<PathBuf>)> {
         let preferred = preferred_path.as_ref();
         if preferred.exists() {
-            return Self::load(preferred);
+            return Self::load_with_source(preferred);
         }
 
-        Self::load_or_default()
+        Self::load_or_default_with_source()
     }
 
     /// Load configuration from default search locations.
@@ -469,9 +483,15 @@ impl Config {
     /// 4. /etc/facepass/config.toml
     /// 5. default
     pub fn load_or_default() -> Result<Self> {
+        Ok(Self::load_or_default_with_source()?.0)
+    }
+
+    /// Load configuration from default search locations and return the
+    /// resolved source path if any.
+    pub fn load_or_default_with_source() -> Result<(Self, Option<PathBuf>)> {
         for candidate in Self::workspace_config_candidates() {
             if candidate.exists() {
-                return Self::load(&candidate);
+                return Self::load_with_source(&candidate);
             }
         }
 
@@ -479,19 +499,19 @@ impl Config {
         if let Some(home) = std::env::var_os("HOME") {
             let user_config = PathBuf::from(home).join(USER_CONFIG_PATH);
             if user_config.exists() {
-                return Self::load(&user_config);
+                return Self::load_with_source(&user_config);
             }
         }
 
         // Try system config
         if Path::new(DEFAULT_CONFIG_PATH).exists() {
-            return Self::load(DEFAULT_CONFIG_PATH);
+            return Self::load_with_source(DEFAULT_CONFIG_PATH);
         }
 
         // Return default
         let config = Self::default();
         config.validate()?;
-        Ok(config)
+        Ok((config, None))
     }
 
     /// Get the user config path
@@ -764,5 +784,18 @@ mod tests {
         let err = Config::load(tmp.path()).unwrap_err();
         assert!(matches!(err, Error::Config(_)));
         assert!(err.to_string().contains("必须添加有效终止条件"));
+    }
+
+    #[test]
+    fn test_load_with_source_reports_loaded_file() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
+
+        let (_, source) = Config::load_with_source(tmp.path()).unwrap();
+        assert_eq!(source.as_deref(), Some(tmp.path()));
     }
 }
