@@ -1,6 +1,6 @@
 //! Test face recognition command
 
-use super::get_username;
+use super::{CommandInput, CommandKey, get_username};
 use anyhow::Result;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
@@ -59,9 +59,11 @@ pub fn run(
     config_path: &str,
     user: Option<String>,
     frames_override: Option<u32>,
-    verbose: bool,
     debug: bool,
+    view: bool,
 ) -> Result<()> {
+    const WINDOW_NAME: &str = "FacePass Test";
+
     let username = get_username(user)?;
     let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
     let frames = frames_override.unwrap_or(config.video.max_frames);
@@ -70,7 +72,7 @@ pub fn run(
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "built-in defaults".to_string());
 
-    if verbose {
+    if debug {
         println!("Testing face recognition for user: {}", username);
     }
 
@@ -145,8 +147,10 @@ pub fn run(
         },
         if debug { " (ignored in debug mode)" } else { "" }
     );
-    if debug {
-        println!("Press Enter or Esc to stop.\n");
+    if view {
+        println!("Press Enter/Esc in the window, or q in the terminal.\n");
+    } else if debug {
+        println!("Press q to stop.\n");
     } else {
         println!("Press Ctrl+C to stop.\n");
     }
@@ -162,13 +166,39 @@ pub fn run(
     let started_at = Instant::now();
     let mut stop_reason = "user_stopped".to_string();
     let mut last_status_width = 0usize;
+    let mut user_requested_stop = false;
+    let mut command_input = if debug || view {
+        Some(CommandInput::capture_single_keys()?)
+    } else {
+        None
+    };
 
-    if debug {
-        highgui::named_window("FacePass Test", highgui::WINDOW_AUTOSIZE)?;
+    if view {
+        highgui::named_window(WINDOW_NAME, highgui::WINDOW_AUTOSIZE)?;
     }
 
     let mut frame_idx = 0u32;
     loop {
+        loop {
+            let command = match command_input.as_ref() {
+                Some(command_input) => command_input.poll_key()?,
+                None => None,
+            };
+
+            let Some(command) = command else {
+                break;
+            };
+
+            if matches!(command, CommandKey::Quit) {
+                user_requested_stop = true;
+                break;
+            }
+        }
+        if user_requested_stop {
+            stop_reason = "user_stopped".to_string();
+            break;
+        }
+
         if enforce_timeout && started_at.elapsed() >= timeout_duration {
             stop_reason = "timeout_reached".to_string();
             break;
@@ -188,14 +218,25 @@ pub fn run(
             match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
                 Ok(detector) => {
                     anti_spoof = Some(detector);
-                    eprintln!("Warning: anti-spoof detector restarted successfully");
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Anti-spoof detector restarted {}",
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 }
                 Err(e) => {
                     stats.anti_spoof_errors += 1;
-                    eprintln!(
-                        "Warning: anti-spoof restart failed ({}/{}): {}",
-                        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
-                    );
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Anti-spoof restart failed ({}/{}) {}",
+                            stats.anti_spoof_errors,
+                            MAX_ANTI_SPOOF_ERRORS,
+                            shorten_error(&e.to_string())
+                        ),
+                    )?;
                     if stats.anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
                         stop_reason = "anti_spoof_error".to_string();
                         break;
@@ -209,8 +250,15 @@ pub fn run(
             Ok(f) => f,
             Err(e) => {
                 stats.frame_errors += 1;
-                if verbose {
-                    eprintln!("Frame error: {}", e);
+                if debug {
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Frame error #{}: {}",
+                            stats.frame_errors,
+                            shorten_error(&e.to_string())
+                        ),
+                    )?;
                 }
                 continue;
             }
@@ -221,15 +269,14 @@ pub fn run(
             Ok(f) => f,
             Err(_) => {
                 stats.no_face_frames += 1;
-                if !debug {
-                    print_status_line(
-                        &mut last_status_width,
-                        &format!(
-                            "Searching for face... {}",
-                            format_frame_progress(frame_idx, frames)
-                        ),
-                    )?;
-                } else {
+                print_status_line(
+                    &mut last_status_width,
+                    &format!(
+                        "Searching for face... {}",
+                        format_frame_progress(frame_idx, frames)
+                    ),
+                )?;
+                if view {
                     let mut display = frame.try_clone()?;
                     draw_text(
                         &mut display,
@@ -237,7 +284,7 @@ pub fn run(
                         "Searching for face...",
                         Scalar::new(0.0, 0.0, 255.0, 0.0),
                     )?;
-                    highgui::imshow("FacePass Test", &display)?;
+                    highgui::imshow(WINDOW_NAME, &display)?;
                     let key = highgui::wait_key(1)?;
                     if should_end(key) {
                         stop_reason = "user_stopped".to_string();
@@ -258,16 +305,15 @@ pub fn run(
                 stats.detected_face_frames += 1;
                 stats.invalid_face_frames += 1;
                 consecutive_matches = 0;
-                if !debug {
-                    print_status_line(
-                        &mut last_status_width,
-                        &format!(
-                            "Invalid face ({}) {}",
-                            reason,
-                            format_frame_progress(frame_idx, frames)
-                        ),
-                    )?;
-                } else {
+                print_status_line(
+                    &mut last_status_width,
+                    &format!(
+                        "Invalid face ({}) {}",
+                        reason,
+                        format_frame_progress(frame_idx, frames)
+                    ),
+                )?;
+                if view {
                     let mut display = frame.try_clone()?;
                     draw_faces(&mut display, &faces)?;
                     draw_required_crops(
@@ -281,7 +327,7 @@ pub fn run(
                         &format!("Invalid face: {}", reason),
                         Scalar::new(0.0, 0.0, 255.0, 0.0),
                     )?;
-                    highgui::imshow("FacePass Test", &display)?;
+                    highgui::imshow(WINDOW_NAME, &display)?;
                     let key = highgui::wait_key(1)?;
                     if should_end(key) {
                         stop_reason = "user_stopped".to_string();
@@ -309,12 +355,6 @@ pub fn run(
                 Ok(score) if score >= config.anti_spoof.threshold => {
                     liveness_score = Some(score);
                     liveness_status = "pass";
-                    if verbose {
-                        eprintln!(
-                            "Liveness passed on frame {} (score: {:.3})",
-                            frame_idx, score
-                        );
-                    }
                 }
                 Ok(score) => {
                     stats.spoof_frames += 1;
@@ -322,33 +362,30 @@ pub fn run(
                     liveness_status = "spoof";
                     liveness_allowed = false;
                     consecutive_matches = 0;
-                    if !debug {
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "Spoof detected #{} (score: {:.3}) {}",
-                                stats.spoof_frames,
-                                score,
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
-                    }
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Spoof detected #{} (score: {:.3}) {}",
+                            stats.spoof_frames,
+                            score,
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 }
                 Err(facepass_core::Error::InvalidFace(reason)) => {
                     liveness_status = "invalid";
                     liveness_allowed = false;
                     stats.invalid_face_frames += 1;
                     consecutive_matches = 0;
-                    if !debug {
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "Invalid face ({}) {}",
-                                reason,
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
-                    } else {
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Invalid face ({}) {}",
+                            reason,
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
+                    if view {
                         let mut display = frame.try_clone()?;
                         draw_faces(&mut display, &faces)?;
                         draw_required_crops(
@@ -362,7 +399,7 @@ pub fn run(
                             &format!("Invalid face: {}", reason),
                             Scalar::new(0.0, 0.0, 255.0, 0.0),
                         )?;
-                        highgui::imshow("FacePass Test", &display)?;
+                        highgui::imshow(WINDOW_NAME, &display)?;
                         let key = highgui::wait_key(1)?;
                         if should_end(key) {
                             stop_reason = "user_stopped".to_string();
@@ -375,13 +412,16 @@ pub fn run(
                     liveness_status = "error";
                     liveness_allowed = false;
                     consecutive_matches = 0;
-                    if verbose {
-                        eprintln!("\rAnti-spoof error on frame {}: {}", frame_idx, e);
-                    }
-                    eprintln!(
-                        "Warning: anti-spoof error ({}/{}), restarting detector: {}",
-                        stats.anti_spoof_errors, MAX_ANTI_SPOOF_ERRORS, e
-                    );
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Anti-spoof error ({}/{}): {} {}",
+                            stats.anti_spoof_errors,
+                            MAX_ANTI_SPOOF_ERRORS,
+                            shorten_error(&e.to_string()),
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                     anti_spoof = None;
                     if stats.anti_spoof_errors >= MAX_ANTI_SPOOF_ERRORS {
                         stop_reason = "anti_spoof_error".to_string();
@@ -415,43 +455,50 @@ pub fn run(
                         stats.max_consecutive_matches.max(consecutive_matches);
                     match_label = Some(m.face_data.label.clone());
                     match_score = Some(m.similarity);
-                    if !debug {
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "Match #{}: {} (similarity: {:.2}%) {}",
-                                stats.matched_frames,
-                                m.face_data.label,
-                                m.similarity * 100.0,
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
-                    }
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Match #{}: {} sim:{:.2}% det:{:.1}% live:{} {}",
+                            stats.matched_frames,
+                            m.face_data.label,
+                            m.similarity * 100.0,
+                            confidence * 100.0,
+                            format_liveness_text(liveness_status, liveness_score),
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 }
                 Ok(None) => {
                     stats.unmatched_frames += 1;
                     consecutive_matches = 0;
-                    if !debug {
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "No match (best < {:.0}%) {}",
-                                threshold * 100.0,
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
-                    }
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "No match (< {:.0}%) det:{:.1}% live:{} {}",
+                            threshold * 100.0,
+                            confidence * 100.0,
+                            format_liveness_text(liveness_status, liveness_score),
+                            format_frame_progress(frame_idx, frames)
+                        ),
+                    )?;
                 }
                 Err(e) => {
                     consecutive_matches = 0;
-                    if verbose {
-                        eprintln!("\rMatch error: {}", e);
+                    if debug {
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "Match error: {} {}",
+                                shorten_error(&e.to_string()),
+                                format_frame_progress(frame_idx, frames)
+                            ),
+                        )?;
                     }
                 }
             }
         }
 
-        if debug {
+        if view {
             let mut display = frame.try_clone()?;
             draw_faces(&mut display, &faces)?;
             draw_required_crops(&mut display, &faces, config.recognition.valid_crop_scale)?;
@@ -514,7 +561,7 @@ pub fn run(
                 Scalar::new(180.0, 180.0, 180.0, 0.0),
             )?;
 
-            highgui::imshow("FacePass Test", &display)?;
+            highgui::imshow(WINDOW_NAME, &display)?;
             let key = highgui::wait_key(1)?;
             if should_end(key) {
                 stop_reason = "user_stopped".to_string();
@@ -528,11 +575,13 @@ pub fn run(
         }
     }
 
-    if debug {
-        highgui::destroy_window("FacePass Test")?;
-    } else {
-        clear_status_line(&mut last_status_width)?;
-    }
+    clear_status_line(&mut last_status_width)?;
+    drop(command_input.take());
+    drop(anti_spoof);
+    drop(recognizer);
+    drop(detector);
+    drop(camera);
+    close_view_window(WINDOW_NAME, view)?;
 
     let valid_frame_threshold_met = stats.valid_frames >= required_valid_frames;
     let consecutive_threshold_met =
@@ -731,6 +780,26 @@ fn format_frame_progress(current: u32, total: u32) -> String {
     }
 }
 
+fn format_liveness_text(status: &str, score: Option<f32>) -> String {
+    match (status, score) {
+        ("pass", Some(score)) => format!("pass/{score:.3}"),
+        ("spoof", Some(score)) => format!("spoof/{score:.3}"),
+        ("invalid", _) => "invalid".to_string(),
+        ("error", _) => "error".to_string(),
+        _ => "off".to_string(),
+    }
+}
+
+fn shorten_error(message: &str) -> String {
+    const MAX_LEN: usize = 60;
+    let shortened: String = message.chars().take(MAX_LEN).collect();
+    if shortened.chars().count() == message.chars().count() {
+        shortened
+    } else {
+        format!("{shortened}...")
+    }
+}
+
 fn print_status_line(last_width: &mut usize, message: &str) -> Result<()> {
     let message_width = message.chars().count();
     let clear_padding = " ".repeat(last_width.saturating_sub(message_width));
@@ -788,7 +857,18 @@ fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()
 }
 
 fn should_end(key: i32) -> bool {
-    matches!(key, 27 | 10 | 13)
+    matches!(key, 27 | 10 | 13 | 113 | 81)
+}
+
+fn close_view_window(window_name: &str, view: bool) -> Result<()> {
+    if view {
+        highgui::destroy_window(window_name)?;
+        for _ in 0..3 {
+            let _ = highgui::wait_key(1)?;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(())
 }
 
 fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {

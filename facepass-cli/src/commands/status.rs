@@ -9,7 +9,7 @@ use facepass_core::{
 };
 use std::path::Path;
 
-pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
+pub fn run(config_path: &str) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
 

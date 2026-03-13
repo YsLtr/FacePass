@@ -27,3 +27,5 @@ config/facepass-dev.toml
 *.pkg.tar.xz
 #PKGBUILD.local
 .claude
+.env
+AGENTS.md

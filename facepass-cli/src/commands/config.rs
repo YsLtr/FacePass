@@ -4,7 +4,7 @@ use anyhow::Result;
 use facepass_core::config::Config;
 use std::process::Command;
 
-pub fn run(config_path: &str, show: bool, set: Option<String>, _verbose: bool) -> Result<()> {
+pub fn run(config_path: &str, show: bool, set: Option<String>) -> Result<()> {
     if show || set.is_none() {
         // Show configuration
         let config = Config::load_with_fallback(config_path)?;

@@ -5,13 +5,9 @@ use anyhow::Result;
 use facepass_core::{config::Config, storage::FaceStorage};
 use std::io::{self, Write};
 
-pub fn run(config_path: &str, user: Option<String>, force: bool, verbose: bool) -> Result<()> {
+pub fn run(config_path: &str, user: Option<String>, force: bool) -> Result<()> {
     let username = get_username(user)?;
     let config = Config::load_with_fallback(config_path)?;
-
-    if verbose {
-        println!("Clearing all faces for user: {}", username);
-    }
 
     let storage = FaceStorage::new(&config.storage.data_dir)?;
     let count = storage.face_count(&username)?;

@@ -1,6 +1,6 @@
 //! Add face command
 
-use super::get_username;
+use super::{CommandInput, CommandKey, get_username};
 use anyhow::{anyhow, Result};
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
@@ -18,20 +18,22 @@ use opencv::{
     prelude::*,
 };
 use std::io::{self, Write};
+use std::time::Duration;
 
 pub fn run(
     config_path: &str,
     user: Option<String>,
     label: Option<String>,
-    verbose: bool,
     debug: bool,
+    view: bool,
 ) -> Result<()> {
+    const WINDOW_NAME: &str = "FacePass Add";
+
     let username = get_username(user)?;
     let config = Config::load_with_fallback(config_path)?;
 
-    if verbose {
+    if debug {
         println!("Adding face for user: {}", username);
-        println!("Config: {:?}", config);
     }
 
     // Check face count limit
@@ -96,14 +98,16 @@ pub fn run(
         );
     }
     println!("Please look at the camera and keep your face centered...");
-    if debug {
-        println!("Press Enter to capture, Esc to cancel.\n");
+    if view {
+        println!("Press Enter/Esc in the window, or a/q in the terminal.\n");
+    } else if debug {
+        println!("Press a to add, or q to cancel.\n");
     } else {
         println!("Press Ctrl+C to cancel.\n");
     }
 
     // Try to capture a good face
-    let max_attempts = if debug || config.video.max_frames == 0 {
+    let max_attempts = if debug || view || config.video.max_frames == 0 {
         u32::MAX
     } else {
         config.video.max_frames
@@ -111,20 +115,67 @@ pub fn run(
     let mut attempt = 0;
     let mut best_confidence = 0.0f32;
     let mut best_feature: Option<Vec<f32>> = None;
+    let mut capture_requested = false;
+    let mut last_status_width = 0usize;
+    let mut command_input = if debug || view {
+        Some(CommandInput::capture_single_keys()?)
+    } else {
+        None
+    };
 
-    if debug {
-        highgui::named_window("FacePass Add", highgui::WINDOW_AUTOSIZE)?;
+    if view {
+        highgui::named_window(WINDOW_NAME, highgui::WINDOW_AUTOSIZE)?;
     }
 
     while attempt < max_attempts {
+        loop {
+            let command = match command_input.as_ref() {
+                Some(command_input) => command_input.poll_key()?,
+                None => None,
+            };
+
+            let Some(command) = command else {
+                break;
+            };
+
+                match command {
+                    CommandKey::Quit => {
+                        clear_status_line(&mut last_status_width)?;
+                        drop(command_input.take());
+                        drop(anti_spoof);
+                        drop(recognizer);
+                        drop(detector);
+                        drop(camera);
+                        close_view_window(WINDOW_NAME, view)?;
+                        println!("\nAdd cancelled.");
+                        return Ok(());
+                    }
+                    CommandKey::Action => {
+                        if !capture_requested && best_feature.is_none() {
+                            print_status_line(
+                                &mut last_status_width,
+                                &format!(
+                                    "Add requested. Waiting for a valid face... ({}/{})",
+                                    attempt, max_attempts
+                                ),
+                            )?;
+                        }
+                        capture_requested = true;
+                    }
+                }
+        }
+
         attempt += 1;
 
         // Read frame
         let frame = match camera.read_frame() {
             Ok(f) => f,
             Err(e) => {
-                if verbose {
-                    eprintln!("Frame error: {}", e);
+                if debug {
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!("Frame error: {}", shorten_error(&e.to_string())),
+                    )?;
                 }
                 continue;
             }
@@ -134,10 +185,11 @@ pub fn run(
         let faces = match detector.detect_raw(&frame) {
             Ok(f) => f,
             Err(_) => {
-                if !debug {
-                    print!("\rSearching for face... ({}/{})", attempt, max_attempts);
-                    io::stdout().flush()?;
-                } else {
+                print_status_line(
+                    &mut last_status_width,
+                    &format!("Searching for face... ({}/{})", attempt, max_attempts),
+                )?;
+                if view {
                     let mut display = frame.try_clone()?;
                     draw_text(
                         &mut display,
@@ -145,10 +197,16 @@ pub fn run(
                         "Searching for face...",
                         Scalar::new(0.0, 0.0, 255.0, 0.0),
                     )?;
-                    highgui::imshow("FacePass Add", &display)?;
+                    highgui::imshow(WINDOW_NAME, &display)?;
                     if should_abort(highgui::wait_key(1)?) {
+                        clear_status_line(&mut last_status_width)?;
+                        drop(command_input.take());
+                        drop(anti_spoof);
+                        drop(recognizer);
+                        drop(detector);
+                        drop(camera);
+                        close_view_window(WINDOW_NAME, view)?;
                         println!("\nAdd cancelled.");
-                        highgui::destroy_window("FacePass Add")?;
                         return Ok(());
                     }
                 }
@@ -163,13 +221,11 @@ pub fn run(
         ) {
             Ok(face_row) => face_row,
             Err(facepass_core::Error::InvalidFace(reason)) => {
-                if !debug {
-                    print!(
-                        "\r! Invalid face ({}) ({}/{})",
-                        reason, attempt, max_attempts
-                    );
-                    io::stdout().flush()?;
-                } else {
+                print_status_line(
+                    &mut last_status_width,
+                    &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+                )?;
+                if view {
                     let mut display = frame.try_clone()?;
                     draw_faces(&mut display, &faces)?;
                     draw_required_crops(
@@ -183,10 +239,16 @@ pub fn run(
                         &format!("Invalid face: {}", reason),
                         Scalar::new(0.0, 0.0, 255.0, 0.0),
                     )?;
-                    highgui::imshow("FacePass Add", &display)?;
+                    highgui::imshow(WINDOW_NAME, &display)?;
                     if should_abort(highgui::wait_key(1)?) {
+                        clear_status_line(&mut last_status_width)?;
+                        drop(command_input.take());
+                        drop(anti_spoof);
+                        drop(recognizer);
+                        drop(detector);
+                        drop(camera);
+                        close_view_window(WINDOW_NAME, view)?;
                         println!("\nAdd cancelled.");
-                        highgui::destroy_window("FacePass Add")?;
                         return Ok(());
                     }
                 }
@@ -214,24 +276,24 @@ pub fn run(
                     liveness_score = Some(score);
                     liveness_status = "spoof";
                     liveness_allowed = false;
-                    if !debug {
-                        print!(
-                            "\r! Spoof detected (score: {:.3}) ({}/{})",
-                            score, attempt, max_attempts
-                        );
-                        io::stdout().flush()?;
-                    }
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Spoof detected ({score:.3}) det:{:.1}% ({}/{})",
+                            confidence * 100.0,
+                            attempt,
+                            max_attempts
+                        ),
+                    )?;
                 }
                 Err(facepass_core::Error::InvalidFace(reason)) => {
                     liveness_status = "invalid";
                     liveness_allowed = false;
-                    if !debug {
-                        print!(
-                            "\r! Invalid face ({}) ({}/{})",
-                            reason, attempt, max_attempts
-                        );
-                        io::stdout().flush()?;
-                    } else {
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+                    )?;
+                    if view {
                         let mut display = frame.try_clone()?;
                         draw_faces(&mut display, &faces)?;
                         draw_required_crops(
@@ -245,18 +307,28 @@ pub fn run(
                             &format!("Invalid face: {}", reason),
                             Scalar::new(0.0, 0.0, 255.0, 0.0),
                         )?;
-                        highgui::imshow("FacePass Add", &display)?;
+                        highgui::imshow(WINDOW_NAME, &display)?;
                         if should_abort(highgui::wait_key(1)?) {
+                            clear_status_line(&mut last_status_width)?;
+                            drop(command_input.take());
+                            drop(anti_spoof);
+                            drop(recognizer);
+                            drop(detector);
+                            drop(camera);
+                            close_view_window(WINDOW_NAME, view)?;
                             println!("\nAdd cancelled.");
-                            highgui::destroy_window("FacePass Add")?;
                             return Ok(());
                         }
                     }
                 }
                 Err(e) => {
-                    if debug {
-                        highgui::destroy_window("FacePass Add")?;
-                    }
+                    clear_status_line(&mut last_status_width)?;
+                    drop(command_input.take());
+                    drop(anti_spoof);
+                    drop(recognizer);
+                    drop(detector);
+                    drop(camera);
+                    close_view_window(WINDOW_NAME, view)?;
                     return Err(anyhow!("Anti-spoof error: {}", e));
                 }
             }
@@ -277,7 +349,7 @@ pub fn run(
             }
         }
 
-        if debug {
+        if view {
             let mut display = frame.try_clone()?;
             draw_faces(&mut display, &faces)?;
             draw_required_crops(&mut display, &faces, config.recognition.valid_crop_scale)?;
@@ -305,15 +377,21 @@ pub fn run(
             draw_text(
                 &mut display,
                 2,
-                "Press Enter to capture, Esc to cancel",
+                "Enter/a capture, Esc/q cancel",
                 Scalar::new(255.0, 255.0, 255.0, 0.0),
             )?;
 
-            highgui::imshow("FacePass Add", &display)?;
+            highgui::imshow(WINDOW_NAME, &display)?;
             let key = highgui::wait_key(1)?;
             if should_abort(key) {
+                clear_status_line(&mut last_status_width)?;
+                drop(command_input.take());
+                drop(anti_spoof);
+                drop(recognizer);
+                drop(detector);
+                drop(camera);
+                close_view_window(WINDOW_NAME, view)?;
                 println!("\nAdd cancelled.");
-                highgui::destroy_window("FacePass Add")?;
                 return Ok(());
             }
             if should_capture(key) {
@@ -326,27 +404,38 @@ pub fn run(
                     "No valid face yet",
                     Scalar::new(0.0, 0.0, 255.0, 0.0),
                 )?;
-                highgui::imshow("FacePass Add", &display)?;
+                highgui::imshow(WINDOW_NAME, &display)?;
             }
         } else if liveness_allowed {
-            print!(
-                "\rFace detected! Confidence: {:.1}% ({}/{})",
-                confidence * 100.0,
-                attempt,
-                max_attempts
-            );
-            io::stdout().flush()?;
+            print_status_line(
+                &mut last_status_width,
+                &format!(
+                    "Face detected det:{:.1}% live:{} ({}/{})",
+                    confidence * 100.0,
+                    format_liveness_text(liveness_status, liveness_score),
+                    attempt,
+                    max_attempts
+                ),
+            )?;
 
-            // If we have a very good detection, stop early
-            if best_feature.is_some() && confidence > 0.98 {
+            // Non-debug CLI mode still supports fast capture without extra input.
+            if best_feature.is_some() && !debug && !view && confidence > 0.98 {
                 break;
             }
         }
+
+        if capture_requested && best_feature.is_some() {
+            break;
+        }
     }
 
-    if debug {
-        highgui::destroy_window("FacePass Add")?;
-    }
+    clear_status_line(&mut last_status_width)?;
+    drop(command_input.take());
+    drop(anti_spoof);
+    drop(recognizer);
+    drop(detector);
+    drop(camera);
+    close_view_window(WINDOW_NAME, view)?;
 
     println!();
 
@@ -373,6 +462,46 @@ pub fn run(
     }
 
     Ok(())
+}
+
+fn print_status_line(last_width: &mut usize, message: &str) -> Result<()> {
+    let message_width = message.chars().count();
+    let clear_padding = " ".repeat(last_width.saturating_sub(message_width));
+    print!("\r{}{}", message, clear_padding);
+    io::stdout().flush()?;
+    *last_width = message_width;
+    Ok(())
+}
+
+fn clear_status_line(last_width: &mut usize) -> Result<()> {
+    if *last_width == 0 {
+        return Ok(());
+    }
+
+    print!("\r{}\r", " ".repeat(*last_width));
+    io::stdout().flush()?;
+    *last_width = 0;
+    Ok(())
+}
+
+fn format_liveness_text(status: &str, score: Option<f32>) -> String {
+    match (status, score) {
+        ("pass", Some(score)) => format!("pass/{score:.3}"),
+        ("spoof", Some(score)) => format!("spoof/{score:.3}"),
+        ("invalid", _) => "invalid".to_string(),
+        ("error", _) => "error".to_string(),
+        _ => "off".to_string(),
+    }
+}
+
+fn shorten_error(message: &str) -> String {
+    const MAX_LEN: usize = 60;
+    let shortened: String = message.chars().take(MAX_LEN).collect();
+    if shortened.chars().count() == message.chars().count() {
+        shortened
+    } else {
+        format!("{shortened}...")
+    }
 }
 
 fn draw_faces(image: &mut Mat, faces: &Mat) -> Result<()> {
@@ -412,11 +541,22 @@ fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()
 }
 
 fn should_abort(key: i32) -> bool {
-    matches!(key, 27)
+    matches!(key, 27 | 113 | 81)
 }
 
 fn should_capture(key: i32) -> bool {
-    matches!(key, 10 | 13)
+    matches!(key, 10 | 13 | 97 | 65)
+}
+
+fn close_view_window(window_name: &str, view: bool) -> Result<()> {
+    if view {
+        highgui::destroy_window(window_name)?;
+        for _ in 0..3 {
+            let _ = highgui::wait_key(1)?;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(())
 }
 
 fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::process::Command;
 
-pub fn run(_verbose: bool) -> Result<()> {
+pub fn run() -> Result<()> {
     println!("Enabling FacePass face authentication...\n");
 
     // Enable and start the systemd service

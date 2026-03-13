@@ -31,9 +31,6 @@ env_logger = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Terminal
-crossterm = "0.28"
-
 # Time
 chrono = "0.4"
 

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use facepass_core::camera::list_cameras;
 
-pub fn run(_verbose: bool) -> Result<()> {
+pub fn run() -> Result<()> {
     println!("Scanning for available cameras...\n");
 
     let cameras = list_cameras()?;

@@ -15,13 +15,13 @@ mod commands;
                         authentication for sudo, polkit, and other privilege escalation tools."
 )]
 struct Cli {
-    /// Enable verbose output
-    #[arg(short, long, global = true)]
-    verbose: bool,
-
-    /// Show debug camera window with overlay info
+    /// Enable debug mode
     #[arg(short = 'd', long, global = true)]
     debug: bool,
+
+    /// Show camera window with overlay info
+    #[arg(short = 'v', long, global = true)]
+    view: bool,
 
     /// Path to configuration file
     #[arg(
@@ -132,54 +132,52 @@ fn main() {
                 eprintln!("Error: Root privileges required to add faces for other users");
                 std::process::exit(1);
             }
-            commands::add::run(&config_path, user, label, cli.verbose, cli.debug)
+            commands::add::run(&config_path, user, label, cli.debug, cli.view)
         }
         Commands::Remove { index, user } => {
             if user.is_some() && !is_root {
                 eprintln!("Error: Root privileges required to remove faces for other users");
                 std::process::exit(1);
             }
-            commands::remove::run(&config_path, user, index, cli.verbose)
+            commands::remove::run(&config_path, user, index)
         }
         Commands::List { user } => {
             if user.is_some() && !is_root {
                 eprintln!("Error: Root privileges required to list faces for other users");
                 std::process::exit(1);
             }
-            commands::list::run(&config_path, user, cli.verbose)
+            commands::list::run(&config_path, user)
         }
         Commands::Clear { user, force } => {
             if user.is_some() && !is_root {
                 eprintln!("Error: Root privileges required to clear faces for other users");
                 std::process::exit(1);
             }
-            commands::clear::run(&config_path, user, force, cli.verbose)
+            commands::clear::run(&config_path, user, force)
         }
         Commands::Test { user, frames } => {
             if user.is_some() && !is_root {
                 eprintln!("Error: Root privileges required to test faces for other users");
                 std::process::exit(1);
             }
-            commands::test::run(&config_path, user, frames, cli.verbose, cli.debug)
+            commands::test::run(&config_path, user, frames, cli.debug, cli.view)
         }
-        Commands::Config { show, set } => {
-            commands::config::run(&config_path, show, set, cli.verbose)
-        }
-        Commands::Cameras => commands::cameras::run(cli.verbose),
-        Commands::Status => commands::status::run(&config_path, cli.verbose),
+        Commands::Config { show, set } => commands::config::run(&config_path, show, set),
+        Commands::Cameras => commands::cameras::run(),
+        Commands::Status => commands::status::run(&config_path),
         Commands::Enable => {
             if !is_root {
                 eprintln!("Error: Root privileges required");
                 std::process::exit(1);
             }
-            commands::enable::run(cli.verbose)
+            commands::enable::run()
         }
         Commands::Disable => {
             if !is_root {
                 eprintln!("Error: Root privileges required");
                 std::process::exit(1);
             }
-            commands::disable::run(cli.verbose)
+            commands::disable::run()
         }
     };
 
