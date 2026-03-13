@@ -13,7 +13,7 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
 
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
 
     print!("Daemon: ");
     if is_daemon_running(&config.daemon.socket_path) {

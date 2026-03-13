@@ -1,7 +1,7 @@
 //! Test face recognition command
 
 use super::get_username;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
     camera::Camera,
@@ -63,7 +63,7 @@ pub fn run(
     debug: bool,
 ) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
     let frames = frames_override.unwrap_or(config.video.max_frames);
 
     if verbose {

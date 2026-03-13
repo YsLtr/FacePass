@@ -27,7 +27,7 @@ pub fn run(
     debug: bool,
 ) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
 
     if verbose {
         println!("Adding face for user: {}", username);
@@ -70,7 +70,7 @@ pub fn run(
     let actual_height = camera.frame_height().ok();
     let detector = FaceDetector::new(&config.models.yunet_path, &config.detection)?;
     let recognizer = FaceRecognizer::new(&config.models.sface_path, &config.recognition)?;
-    let mut anti_spoof = if config.anti_spoof.enabled {
+    let anti_spoof = if config.anti_spoof.enabled {
         match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
             Ok(d) => {
                 println!(
@@ -254,8 +254,6 @@ pub fn run(
                     }
                 }
                 Err(e) => {
-                    liveness_status = "error";
-                    liveness_allowed = false;
                     if debug {
                         highgui::destroy_window("FacePass Add")?;
                     }

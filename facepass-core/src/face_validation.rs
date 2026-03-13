@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use opencv::{
-    core::{Mat, Rect, CV_32F, CV_8UC3},
+    core::{Mat, Rect},
     prelude::*,
 };
 

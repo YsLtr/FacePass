@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     info!("FacePass daemon starting...");
 
     // Load configuration
-    let config = Arc::new(Config::load_or_default());
+    let config = Arc::new(Config::load_or_default()?);
 
     // Set log level from config
     if config.daemon.log_level == "debug" {

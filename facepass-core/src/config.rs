@@ -257,10 +257,7 @@ pub struct ModelsConfig {
     pub sface_path: String,
 
     /// Path to MiniFASNetV2 anti-spoofing model
-    #[serde(
-        default = "default_anti_spoof_v2_path",
-        alias = "anti_spoof_path"
-    )]
+    #[serde(default = "default_anti_spoof_v2_path")]
     pub anti_spoof_v2_path: String,
 
     /// Path to MiniFASNetV1SE anti-spoofing model
@@ -334,11 +331,11 @@ pub struct AntiSpoofConfig {
     pub mode: AntiSpoofMode,
 
     /// Input size for MiniFASNetV2 (width = height)
-    #[serde(default = "default_v2_input_size", alias = "input_size")]
+    #[serde(default = "default_v2_input_size")]
     pub v2_input_size: i32,
 
     /// Crop scale for MiniFASNetV2
-    #[serde(default = "default_v2_crop_scale", alias = "crop_scale")]
+    #[serde(default = "default_v2_crop_scale")]
     pub v2_crop_scale: f32,
 
     /// Input size for MiniFASNetV1SE (width = height)
@@ -447,21 +444,17 @@ impl Config {
             ))
         })?;
 
-        let raw: toml::Value = toml::from_str(&content)?;
-        let mut config: Config = toml::from_str(&content)?;
-        config.migrate_valid_crop_scale(&raw);
-        config.migrate_anti_spoof_model_path();
+        let config: Config = toml::from_str(&content)?;
+        config.validate()?;
         Ok(config)
     }
 
     /// Load configuration from a preferred path, then current workspace, then
     /// user/system defaults.
-    pub fn load_with_fallback<P: AsRef<Path>>(preferred_path: P) -> Self {
+    pub fn load_with_fallback<P: AsRef<Path>>(preferred_path: P) -> Result<Self> {
         let preferred = preferred_path.as_ref();
         if preferred.exists() {
-            if let Ok(config) = Self::load(preferred) {
-                return config;
-            }
+            return Self::load(preferred);
         }
 
         Self::load_or_default()
@@ -475,12 +468,10 @@ impl Config {
     /// 3. ~/.config/facepass/config.toml
     /// 4. /etc/facepass/config.toml
     /// 5. default
-    pub fn load_or_default() -> Self {
+    pub fn load_or_default() -> Result<Self> {
         for candidate in Self::workspace_config_candidates() {
             if candidate.exists() {
-                if let Ok(config) = Self::load(&candidate) {
-                    return config;
-                }
+                return Self::load(&candidate);
             }
         }
 
@@ -488,21 +479,19 @@ impl Config {
         if let Some(home) = std::env::var_os("HOME") {
             let user_config = PathBuf::from(home).join(USER_CONFIG_PATH);
             if user_config.exists() {
-                if let Ok(config) = Self::load(&user_config) {
-                    return config;
-                }
+                return Self::load(&user_config);
             }
         }
 
         // Try system config
         if Path::new(DEFAULT_CONFIG_PATH).exists() {
-            if let Ok(config) = Self::load(DEFAULT_CONFIG_PATH) {
-                return config;
-            }
+            return Self::load(DEFAULT_CONFIG_PATH);
         }
 
         // Return default
-        Self::default()
+        let config = Self::default();
+        config.validate()?;
+        Ok(config)
     }
 
     /// Get the user config path
@@ -527,34 +516,6 @@ impl Config {
     /// Get the user's face data directory
     pub fn user_data_dir(&self, username: &str) -> PathBuf {
         PathBuf::from(&self.storage.data_dir).join(username)
-    }
-
-    fn migrate_anti_spoof_model_path(&mut self) {
-        let legacy_path = format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
-        if self.models.anti_spoof_v2_path == legacy_path {
-            self.models.anti_spoof_v2_path = default_anti_spoof_v2_path();
-        }
-    }
-
-    fn migrate_valid_crop_scale(&mut self, raw: &toml::Value) {
-        let recognition_scale = raw
-            .get("recognition")
-            .and_then(|v| v.get("valid_crop_scale"))
-            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)));
-
-        if recognition_scale.is_some() {
-            return;
-        }
-
-        if let Some(scale) = raw
-            .get("anti_spoof")
-            .and_then(|v| v.get("valid_crop_scale"))
-            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
-        {
-            if scale.is_finite() {
-                self.recognition.valid_crop_scale = scale as f32;
-            }
-        }
     }
 
     fn workspace_config_candidates() -> Vec<PathBuf> {
@@ -662,6 +623,15 @@ impl Config {
             )));
         }
 
+        if self.video.max_frames == 0
+            && self.recognition.valid_frames == 0
+            && self.video.timeout == 0
+        {
+            return Err(Error::Config(
+                "Invalid configuration: video.max_frames, recognition.valid_frames, and video.timeout cannot all be 0. 必须添加有效终止条件，若要测试请使用--debug".to_string(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -764,15 +734,35 @@ mod tests {
     }
 
     #[test]
-    fn test_load_migrates_legacy_anti_spoof_model_path() {
+    fn test_validate_rejects_missing_stop_condition() {
         let mut config = Config::default();
-        config.models.anti_spoof_v2_path =
-            format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.video.max_frames = 0;
+        config.video.timeout = 0;
+        config.recognition.valid_frames = 0;
+
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains(
+            "video.max_frames, recognition.valid_frames, and video.timeout cannot all be 0"
+        ));
+    }
+
+    #[test]
+    fn test_load_runs_validation() {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config.video.max_frames = 0;
+        config.video.timeout = 0;
+        config.recognition.valid_frames = 0;
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
 
-        let loaded = Config::load(tmp.path()).unwrap();
-        assert_eq!(loaded.models.anti_spoof_v2_path, default_anti_spoof_v2_path());
+        let err = Config::load(tmp.path()).unwrap_err();
+        assert!(matches!(err, Error::Config(_)));
+        assert!(err.to_string().contains("必须添加有效终止条件"));
     }
 }

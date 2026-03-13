@@ -6,7 +6,7 @@ use facepass_core::{config::Config, storage::FaceStorage};
 
 pub fn run(config_path: &str, user: Option<String>, index: usize, verbose: bool) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
 
     if verbose {
         println!("Removing face {} for user: {}", index, username);

@@ -6,7 +6,7 @@ use facepass_core::{config::Config, storage::FaceStorage};
 
 pub fn run(config_path: &str, user: Option<String>, verbose: bool) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
 
     if verbose {
         println!("Listing faces for user: {}", username);

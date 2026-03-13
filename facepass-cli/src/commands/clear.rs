@@ -7,7 +7,7 @@ use std::io::{self, Write};
 
 pub fn run(config_path: &str, user: Option<String>, force: bool, verbose: bool) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load_with_fallback(config_path);
+    let config = Config::load_with_fallback(config_path)?;
 
     if verbose {
         println!("Clearing all faces for user: {}", username);
