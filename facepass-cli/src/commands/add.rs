@@ -1,10 +1,16 @@
 //! Add face command
 
 use super::get_username;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use facepass_core::{
-    anti_spoofing::AntiSpoofDetector, camera::Camera, config::Config, detection::FaceDetector,
-    models::FaceRecord, recognition::FaceRecognizer, storage::FaceStorage,
+    anti_spoofing::AntiSpoofDetector,
+    camera::Camera,
+    config::Config,
+    detection::FaceDetector,
+    face_validation::select_primary_face,
+    models::FaceRecord,
+    recognition::FaceRecognizer,
+    storage::FaceStorage,
 };
 use opencv::{
     core::{Point, Rect, Scalar},
@@ -21,7 +27,7 @@ pub fn run(
     debug: bool,
 ) -> Result<()> {
     let username = get_username(user)?;
-    let config = Config::load(config_path).unwrap_or_default();
+    let config = Config::load_with_fallback(config_path);
 
     if verbose {
         println!("Adding face for user: {}", username);
@@ -60,17 +66,17 @@ pub fn run(
 
     // Initialize components
     let camera = Camera::open(&config.video)?;
+    let actual_width = camera.frame_width().ok();
+    let actual_height = camera.frame_height().ok();
     let detector = FaceDetector::new(&config.models.yunet_path, &config.detection)?;
     let recognizer = FaceRecognizer::new(&config.models.sface_path, &config.recognition)?;
     let mut anti_spoof = if config.anti_spoof.enabled {
-        match AntiSpoofDetector::new(&config.models.anti_spoof_path, &config.anti_spoof) {
+        match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
             Ok(d) => {
                 println!(
-                    "Anti-spoofing enabled (threshold: {:.2}, input: {}x{}, scale: {:.1})",
+                    "Anti-spoofing enabled (threshold: {:.2}, mode: {})",
                     config.anti_spoof.threshold,
-                    config.anti_spoof.input_size,
-                    config.anti_spoof.input_size,
-                    config.anti_spoof.crop_scale
+                    config.anti_spoof.mode.as_str()
                 );
                 Some(d)
             }
@@ -87,6 +93,12 @@ pub fn run(
     };
 
     println!("Camera opened successfully.");
+    if let (Some(width), Some(height)) = (actual_width, actual_height) {
+        println!(
+            "Camera resolution: actual {}x{}, requested {}x{}",
+            width, height, config.video.frame_width, config.video.frame_height
+        );
+    }
     println!("Please look at the camera and keep your face centered...");
     if debug {
         println!("Press Enter to capture, Esc to cancel.\n");
@@ -148,17 +160,56 @@ pub fn run(
             }
         };
 
-        // Get first face row
-        let face_row = faces.row(0)?.try_clone()?;
+        let face_row = match select_primary_face(
+            &frame,
+            &faces,
+            config.recognition.valid_crop_scale,
+        ) {
+            Ok(face_row) => face_row,
+            Err(facepass_core::Error::InvalidFace(reason)) => {
+                if !debug {
+                    print!(
+                        "\r! Invalid face ({}) ({}/{})",
+                        reason, attempt, max_attempts
+                    );
+                    io::stdout().flush()?;
+                } else {
+                    let mut display = frame.try_clone()?;
+                    draw_faces(&mut display, &faces)?;
+                    draw_required_crops(
+                        &mut display,
+                        &faces,
+                        config.recognition.valid_crop_scale,
+                    )?;
+                    draw_text(
+                        &mut display,
+                        0,
+                        &format!("Invalid face: {}", reason),
+                        Scalar::new(0.0, 0.0, 255.0, 0.0),
+                    )?;
+                    highgui::imshow("FacePass Add", &display)?;
+                    if should_abort(highgui::wait_key(1)?) {
+                        println!("\nAdd cancelled.");
+                        highgui::destroy_window("FacePass Add")?;
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            Err(_) => continue,
+        };
 
-        // Get confidence
-        let confidence = *faces.at_2d::<f32>(0, 14)?;
+        let confidence = *face_row.at_2d::<f32>(0, 14)?;
 
         let mut liveness_score: Option<f32> = None;
         let mut liveness_status = "disabled";
         let mut liveness_allowed = true;
         if let Some(ref anti_spoof_detector) = anti_spoof {
-            match anti_spoof_detector.check_liveness(&frame, &face_row) {
+            match anti_spoof_detector.check_liveness(
+                &frame,
+                &face_row,
+                config.recognition.valid_crop_scale,
+            ) {
                 Ok(score) if score >= config.anti_spoof.threshold => {
                     liveness_score = Some(score);
                     liveness_status = "pass";
@@ -175,6 +226,37 @@ pub fn run(
                         io::stdout().flush()?;
                     }
                 }
+                Err(facepass_core::Error::InvalidFace(reason)) => {
+                    liveness_status = "invalid";
+                    liveness_allowed = false;
+                    if !debug {
+                        print!(
+                            "\r! Invalid face ({}) ({}/{})",
+                            reason, attempt, max_attempts
+                        );
+                        io::stdout().flush()?;
+                    } else {
+                        let mut display = frame.try_clone()?;
+                        draw_faces(&mut display, &faces)?;
+                        draw_required_crops(
+                            &mut display,
+                            &faces,
+                            config.recognition.valid_crop_scale,
+                        )?;
+                        draw_text(
+                            &mut display,
+                            0,
+                            &format!("Invalid face: {}", reason),
+                            Scalar::new(0.0, 0.0, 255.0, 0.0),
+                        )?;
+                        highgui::imshow("FacePass Add", &display)?;
+                        if should_abort(highgui::wait_key(1)?) {
+                            println!("\nAdd cancelled.");
+                            highgui::destroy_window("FacePass Add")?;
+                            return Ok(());
+                        }
+                    }
+                }
                 Err(e) => {
                     liveness_status = "error";
                     liveness_allowed = false;
@@ -182,6 +264,10 @@ pub fn run(
                     anti_spoof = None;
                 }
             }
+        }
+
+        if !liveness_allowed && liveness_status == "invalid" {
+            continue;
         }
 
         if liveness_allowed {
@@ -198,6 +284,7 @@ pub fn run(
         if debug {
             let mut display = frame.try_clone()?;
             draw_faces(&mut display, &faces)?;
+            draw_required_crops(&mut display, &faces, config.recognition.valid_crop_scale)?;
             draw_text(
                 &mut display,
                 0,
@@ -208,12 +295,13 @@ pub fn run(
             let live_text = match (liveness_status, liveness_score) {
                 ("pass", Some(s)) => format!("Liveness: PASS ({:.3})", s),
                 ("spoof", Some(s)) => format!("Liveness: SPOOF ({:.3})", s),
+                ("invalid", _) => "Liveness: INVALID FACE".to_string(),
                 ("error", _) => "Liveness: ERROR".to_string(),
                 _ => "Liveness: disabled".to_string(),
             };
             let live_color = match liveness_status {
                 "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
-                "spoof" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+                "spoof" | "invalid" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
                 _ => Scalar::new(200.0, 200.0, 200.0, 0.0),
             };
             draw_text(&mut display, 1, &live_text, live_color)?;
@@ -333,4 +421,80 @@ fn should_abort(key: i32) -> bool {
 
 fn should_capture(key: i32) -> bool {
     matches!(key, 10 | 13)
+}
+
+fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {
+    for row_idx in 0..faces.rows() {
+        let face_row = faces.row(row_idx)?.try_clone()?;
+        if let Ok((rect, valid)) =
+            facepass_core::face_validation::compute_valid_crop_rect(image, &face_row, valid_crop_scale)
+        {
+            let color = if valid {
+                Scalar::new(0.0, 255.0, 255.0, 0.0)
+            } else {
+                Scalar::new(0.0, 0.0, 255.0, 0.0)
+            };
+
+            draw_dashed_rect(image, rect, color, 8, 6)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn draw_dashed_rect(image: &mut Mat, rect: Rect, color: Scalar, dash: i32, gap: i32) -> Result<()> {
+    let x1 = rect.x;
+    let y1 = rect.y;
+    let x2 = rect.x + rect.width;
+    let y2 = rect.y + rect.height;
+
+    let mut x = x1;
+    while x < x2 {
+        let x_end = (x + dash).min(x2);
+        imgproc::line(
+            image,
+            Point::new(x, y1),
+            Point::new(x_end, y1),
+            color,
+            1,
+            imgproc::LINE_8,
+            0,
+        )?;
+        imgproc::line(
+            image,
+            Point::new(x, y2),
+            Point::new(x_end, y2),
+            color,
+            1,
+            imgproc::LINE_8,
+            0,
+        )?;
+        x += dash + gap;
+    }
+
+    let mut y = y1;
+    while y < y2 {
+        let y_end = (y + dash).min(y2);
+        imgproc::line(
+            image,
+            Point::new(x1, y),
+            Point::new(x1, y_end),
+            color,
+            1,
+            imgproc::LINE_8,
+            0,
+        )?;
+        imgproc::line(
+            image,
+            Point::new(x2, y),
+            Point::new(x2, y_end),
+            color,
+            1,
+            imgproc::LINE_8,
+            0,
+        )?;
+        y += dash + gap;
+    }
+
+    Ok(())
 }

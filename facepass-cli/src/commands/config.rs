@@ -7,7 +7,7 @@ use std::process::Command;
 pub fn run(config_path: &str, show: bool, set: Option<String>, _verbose: bool) -> Result<()> {
     if show || set.is_none() {
         // Show configuration
-        let config = Config::load(config_path).unwrap_or_default();
+        let config = Config::load_with_fallback(config_path);
 
         println!("FacePass Configuration");
         println!("======================\n");
@@ -37,8 +37,17 @@ pub fn run(config_path: &str, show: bool, set: Option<String>, _verbose: bool) -
             config.recognition.max_faces_per_user
         );
         println!(
-            "  required_matches = {}",
-            config.recognition.required_matches
+            "  consecutive_match_frames = {}",
+            config.recognition.consecutive_match_frames
+        );
+        println!("  valid_frames = {}", config.recognition.valid_frames);
+        println!(
+            "  stop_on_valid_frames = {}",
+            config.recognition.stop_on_valid_frames
+        );
+        println!(
+            "  valid_crop_scale = {}",
+            config.recognition.valid_crop_scale
         );
         println!();
 
@@ -62,6 +71,24 @@ pub fn run(config_path: &str, show: bool, set: Option<String>, _verbose: bool) -
         println!("[models]");
         println!("  yunet_path = \"{}\"", config.models.yunet_path);
         println!("  sface_path = \"{}\"", config.models.sface_path);
+        println!(
+            "  anti_spoof_v2_path = \"{}\"",
+            config.models.anti_spoof_v2_path
+        );
+        println!(
+            "  anti_spoof_v1se_path = \"{}\"",
+            config.models.anti_spoof_v1se_path
+        );
+        println!();
+
+        println!("[anti_spoof]");
+        println!("  enabled = {}", config.anti_spoof.enabled);
+        println!("  threshold = {}", config.anti_spoof.threshold);
+        println!("  mode = \"{}\"", config.anti_spoof.mode.as_str());
+        println!("  v2_input_size = {}", config.anti_spoof.v2_input_size);
+        println!("  v2_crop_scale = {}", config.anti_spoof.v2_crop_scale);
+        println!("  v1se_input_size = {}", config.anti_spoof.v1se_input_size);
+        println!("  v1se_crop_scale = {}", config.anti_spoof.v1se_crop_scale);
         println!();
 
         println!("[storage]");

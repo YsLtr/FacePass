@@ -8,6 +8,7 @@ pub mod camera;
 pub mod config;
 pub mod detection;
 pub mod error;
+pub mod face_validation;
 pub mod matching;
 pub mod models;
 pub mod recognition;

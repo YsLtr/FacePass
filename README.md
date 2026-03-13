@@ -7,7 +7,7 @@ FacePass 是一个基于 Rust 的 Linux 人脸识别认证系统，支持 sudo�
 - 🔐 PAM 集成：支持 sudo、polkit 等需要认证的场景
 - 🚀 高性能：使用 Rust 编写，原生 OpenCV 绑定
 - 🔒 安全：SSH 会话自动跳过，支持合盖检测
-- 🎯 精准：基于 YuNet + SFace ONNX 模型，余弦相似度比对
+- 🎯 精准：基于 YuNet + SFace + MiniFASNetV2 / MiniFASNetV1SE 活体融合推理
 - 🛠️ 易用：CLI 工具管理人脸数据
 
 ## 架构
@@ -51,6 +51,10 @@ sudo apt install libopencv-dev
 
 1. [YuNet 人脸检测模型](https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx)
 2. [SFace 人脸识别模型](https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx)
+3. `MiniFASNetV2.onnx` 活体检测模型
+4. `MiniFASNetV1SE.onnx` 活体检测模型
+
+建议同时准备两个模型并在配置中启用 `fusion`，以匹配训练分布中的 2.7 和 4.0 两种裁切范围。
 
 将模型文件下载到 `models/` 目录：
 ```bash

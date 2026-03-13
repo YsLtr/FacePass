@@ -126,9 +126,21 @@ pub struct RecognitionConfig {
     #[serde(default = "default_max_faces_per_user")]
     pub max_faces_per_user: u32,
 
-    /// Required consecutive matches
-    #[serde(default = "default_required_matches")]
-    pub required_matches: u32,
+    /// Required consecutive matched frames
+    #[serde(default = "default_consecutive_match_frames")]
+    pub consecutive_match_frames: u32,
+
+    /// Minimum number of valid recognition frames required per attempt
+    #[serde(default = "default_valid_frames")]
+    pub valid_frames: u32,
+
+    /// Whether to stop immediately once valid_frames has been reached
+    #[serde(default = "default_stop_on_valid_frames")]
+    pub stop_on_valid_frames: bool,
+
+    /// Required scale for the valid-face square crop area (independent of models)
+    #[serde(default = "default_valid_crop_scale")]
+    pub valid_crop_scale: f32,
 }
 
 impl Default for RecognitionConfig {
@@ -136,7 +148,10 @@ impl Default for RecognitionConfig {
         Self {
             similarity_threshold: default_similarity_threshold(),
             max_faces_per_user: default_max_faces_per_user(),
-            required_matches: default_required_matches(),
+            consecutive_match_frames: default_consecutive_match_frames(),
+            valid_frames: default_valid_frames(),
+            stop_on_valid_frames: default_stop_on_valid_frames(),
+            valid_crop_scale: default_valid_crop_scale(),
         }
     }
 }
@@ -147,8 +162,17 @@ fn default_similarity_threshold() -> f64 {
 fn default_max_faces_per_user() -> u32 {
     5
 }
-fn default_required_matches() -> u32 {
+fn default_consecutive_match_frames() -> u32 {
     1
+}
+fn default_valid_frames() -> u32 {
+    5
+}
+fn default_stop_on_valid_frames() -> bool {
+    true
+}
+fn default_valid_crop_scale() -> f32 {
+    2.7
 }
 
 /// Security configuration
@@ -231,9 +255,16 @@ pub struct ModelsConfig {
     #[serde(default = "default_sface_path")]
     pub sface_path: String,
 
-    /// Path to anti-spoofing model
-    #[serde(default = "default_anti_spoof_path")]
-    pub anti_spoof_path: String,
+    /// Path to MiniFASNetV2 anti-spoofing model
+    #[serde(
+        default = "default_anti_spoof_v2_path",
+        alias = "anti_spoof_path"
+    )]
+    pub anti_spoof_v2_path: String,
+
+    /// Path to MiniFASNetV1SE anti-spoofing model
+    #[serde(default = "default_anti_spoof_v1se_path")]
+    pub anti_spoof_v1se_path: String,
 }
 
 impl Default for ModelsConfig {
@@ -241,7 +272,8 @@ impl Default for ModelsConfig {
         Self {
             yunet_path: default_yunet_path(),
             sface_path: default_sface_path(),
-            anti_spoof_path: default_anti_spoof_path(),
+            anti_spoof_v2_path: default_anti_spoof_v2_path(),
+            anti_spoof_v1se_path: default_anti_spoof_v1se_path(),
         }
     }
 }
@@ -252,11 +284,40 @@ fn default_yunet_path() -> String {
 fn default_sface_path() -> String {
     format!("{}/face_recognition_sface_2021dec.onnx", DEFAULT_MODELS_DIR)
 }
-fn default_anti_spoof_path() -> String {
-    "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx".to_string()
+fn default_anti_spoof_v2_path() -> String {
+    format!("{}/MiniFASNetV2.onnx", DEFAULT_MODELS_DIR)
+}
+fn default_anti_spoof_v1se_path() -> String {
+    format!("{}/MiniFASNetV1SE.onnx", DEFAULT_MODELS_DIR)
 }
 
 /// Anti-spoofing configuration
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AntiSpoofMode {
+    #[serde(rename = "minifasnet_v2")]
+    MiniFASNetV2,
+    #[serde(rename = "minifasnet_v1se")]
+    MiniFASNetV1SE,
+    #[serde(rename = "fusion")]
+    Fusion,
+}
+
+impl AntiSpoofMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MiniFASNetV2 => "minifasnet_v2",
+            Self::MiniFASNetV1SE => "minifasnet_v1se",
+            Self::Fusion => "fusion",
+        }
+    }
+}
+
+impl Default for AntiSpoofMode {
+    fn default() -> Self {
+        Self::MiniFASNetV2
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiSpoofConfig {
     /// Enable anti-spoofing detection
@@ -267,13 +328,26 @@ pub struct AntiSpoofConfig {
     #[serde(default = "default_liveness_threshold")]
     pub threshold: f32,
 
-    /// Input size for anti-spoofing model (width = height)
-    #[serde(default = "default_anti_spoof_input_size")]
-    pub input_size: i32,
+    /// Anti-spoofing strategy: v2 / v1se / fusion
+    #[serde(default = "default_anti_spoof_mode")]
+    pub mode: AntiSpoofMode,
 
-    /// Crop scale factor for the face ROI before inference
-    #[serde(default = "default_anti_spoof_crop_scale")]
-    pub crop_scale: f32,
+    /// Input size for MiniFASNetV2 (width = height)
+    #[serde(default = "default_v2_input_size", alias = "input_size")]
+    pub v2_input_size: i32,
+
+    /// Crop scale for MiniFASNetV2
+    #[serde(default = "default_v2_crop_scale", alias = "crop_scale")]
+    pub v2_crop_scale: f32,
+
+    /// Input size for MiniFASNetV1SE (width = height)
+    #[serde(default = "default_v1se_input_size")]
+    pub v1se_input_size: i32,
+
+    /// Crop scale for MiniFASNetV1SE
+    #[serde(default = "default_v1se_crop_scale")]
+    pub v1se_crop_scale: f32,
+
 }
 
 impl Default for AntiSpoofConfig {
@@ -281,8 +355,12 @@ impl Default for AntiSpoofConfig {
         Self {
             enabled: default_anti_spoof_enabled(),
             threshold: default_liveness_threshold(),
-            input_size: default_anti_spoof_input_size(),
-            crop_scale: default_anti_spoof_crop_scale(),
+            mode: default_anti_spoof_mode(),
+            v2_input_size: default_v2_input_size(),
+            v2_crop_scale: default_v2_crop_scale(),
+            v1se_input_size: default_v1se_input_size(),
+            v1se_crop_scale: default_v1se_crop_scale(),
+            // keep per-model crop scales for inference only
         }
     }
 }
@@ -293,11 +371,20 @@ fn default_anti_spoof_enabled() -> bool {
 fn default_liveness_threshold() -> f32 {
     0.5
 }
-fn default_anti_spoof_input_size() -> i32 {
+fn default_anti_spoof_mode() -> AntiSpoofMode {
+    AntiSpoofMode::MiniFASNetV2
+}
+fn default_v2_input_size() -> i32 {
     80
 }
-fn default_anti_spoof_crop_scale() -> f32 {
+fn default_v2_crop_scale() -> f32 {
     2.7
+}
+fn default_v1se_input_size() -> i32 {
+    80
+}
+fn default_v1se_crop_scale() -> f32 {
+    4.0
 }
 
 /// Storage configuration
@@ -359,14 +446,43 @@ impl Config {
             ))
         })?;
 
+        let raw: toml::Value = toml::from_str(&content)?;
         let mut config: Config = toml::from_str(&content)?;
+        config.migrate_valid_crop_scale(&raw);
         config.migrate_anti_spoof_model_path();
         Ok(config)
     }
 
-    /// Load configuration from default path, or create default if not exists
-    /// Priority: ~/.config/facepass/config.toml > /etc/facepass/config.toml > default
+    /// Load configuration from a preferred path, then current workspace, then
+    /// user/system defaults.
+    pub fn load_with_fallback<P: AsRef<Path>>(preferred_path: P) -> Self {
+        let preferred = preferred_path.as_ref();
+        if preferred.exists() {
+            if let Ok(config) = Self::load(preferred) {
+                return config;
+            }
+        }
+
+        Self::load_or_default()
+    }
+
+    /// Load configuration from default search locations.
+    ///
+    /// Priority:
+    /// 1. current working directory or parent dirs: config/facepass-dev.toml
+    /// 2. current working directory or parent dirs: config/facepass.toml
+    /// 3. ~/.config/facepass/config.toml
+    /// 4. /etc/facepass/config.toml
+    /// 5. default
     pub fn load_or_default() -> Self {
+        for candidate in Self::workspace_config_candidates() {
+            if candidate.exists() {
+                if let Ok(config) = Self::load(&candidate) {
+                    return config;
+                }
+            }
+        }
+
         // Try user config first
         if let Some(home) = std::env::var_os("HOME") {
             let user_config = PathBuf::from(home).join(USER_CONFIG_PATH);
@@ -414,9 +530,46 @@ impl Config {
 
     fn migrate_anti_spoof_model_path(&mut self) {
         let legacy_path = format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
-        if self.models.anti_spoof_path == legacy_path {
-            self.models.anti_spoof_path = default_anti_spoof_path();
+        if self.models.anti_spoof_v2_path == legacy_path {
+            self.models.anti_spoof_v2_path = default_anti_spoof_v2_path();
         }
+    }
+
+    fn migrate_valid_crop_scale(&mut self, raw: &toml::Value) {
+        let recognition_scale = raw
+            .get("recognition")
+            .and_then(|v| v.get("valid_crop_scale"))
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)));
+
+        if recognition_scale.is_some() {
+            return;
+        }
+
+        if let Some(scale) = raw
+            .get("anti_spoof")
+            .and_then(|v| v.get("valid_crop_scale"))
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|n| n as f64)))
+        {
+            if scale.is_finite() {
+                self.recognition.valid_crop_scale = scale as f32;
+            }
+        }
+    }
+
+    fn workspace_config_candidates() -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+        let mut cursor = match std::env::current_dir() {
+            Ok(dir) => Some(dir),
+            Err(_) => None,
+        };
+
+        while let Some(dir) = cursor {
+            candidates.push(dir.join("config").join("facepass-dev.toml"));
+            candidates.push(dir.join("config").join("facepass.toml"));
+            cursor = dir.parent().map(Path::to_path_buf);
+        }
+
+        candidates
     }
 
     /// Validate configuration
@@ -457,16 +610,56 @@ impl Config {
             ));
         }
 
-        if self.anti_spoof.input_size <= 0 || self.anti_spoof.input_size > 512 {
+        if self.anti_spoof.v2_input_size <= 0 || self.anti_spoof.v2_input_size > 512 {
             return Err(Error::Config(
-                "anti_spoof.input_size must be between 1 and 512".to_string(),
+                "anti_spoof.v2_input_size must be between 1 and 512".to_string(),
             ));
         }
 
-        if self.anti_spoof.crop_scale <= 0.0 || self.anti_spoof.crop_scale > 10.0 {
+        if self.anti_spoof.v1se_input_size <= 0 || self.anti_spoof.v1se_input_size > 512 {
             return Err(Error::Config(
-                "anti_spoof.crop_scale must be between 0.0 and 10.0".to_string(),
+                "anti_spoof.v1se_input_size must be between 1 and 512".to_string(),
             ));
+        }
+
+        if self.anti_spoof.v2_crop_scale <= 0.0 || self.anti_spoof.v2_crop_scale > 10.0 {
+            return Err(Error::Config(
+                "anti_spoof.v2_crop_scale must be between 0.0 and 10.0".to_string(),
+            ));
+        }
+
+        if self.anti_spoof.v1se_crop_scale <= 0.0 || self.anti_spoof.v1se_crop_scale > 10.0 {
+            return Err(Error::Config(
+                "anti_spoof.v1se_crop_scale must be between 0.0 and 10.0".to_string(),
+            ));
+        }
+
+        if self.recognition.valid_crop_scale <= 0.0
+            || self.recognition.valid_crop_scale > 10.0
+        {
+            return Err(Error::Config(
+                "recognition.valid_crop_scale must be between 0.0 and 10.0".to_string(),
+            ));
+        }
+
+        if self.recognition.valid_frames == 0 {
+            return Err(Error::Config(
+                "recognition.valid_frames must be greater than 0".to_string(),
+            ));
+        }
+
+        if self.video.max_frames < self.recognition.valid_frames {
+            return Err(Error::Config(format!(
+                "video.max_frames ({}) must be greater than or equal to recognition.valid_frames ({})",
+                self.video.max_frames, self.recognition.valid_frames
+            )));
+        }
+
+        if self.recognition.consecutive_match_frames > self.recognition.valid_frames {
+            return Err(Error::Config(format!(
+                "recognition.consecutive_match_frames ({}) must be less than or equal to recognition.valid_frames ({})",
+                self.recognition.consecutive_match_frames, self.recognition.valid_frames
+            )));
         }
 
         Ok(())
@@ -504,7 +697,8 @@ mod tests {
     fn test_validate_allows_missing_anti_spoof_model() {
         let mut config = Config::default();
         config.anti_spoof.enabled = true;
-        config.models.anti_spoof_path = missing_model_path("anti-spoof");
+        config.models.anti_spoof_v2_path = missing_model_path("anti-spoof-v2");
+        config.models.anti_spoof_v1se_path = missing_model_path("anti-spoof-v1se");
 
         // Keep the always-required models present so this test only exercises
         // the anti-spoof fallback policy.
@@ -533,25 +727,25 @@ mod tests {
         let mut config = Config::default();
         config.models.yunet_path = "/bin/sh".to_string();
         config.models.sface_path = "/bin/sh".to_string();
-        config.anti_spoof.crop_scale = 0.0;
+        config.anti_spoof.v2_crop_scale = 0.0;
 
         let err = config.validate().unwrap_err();
         assert!(matches!(err, Error::Config(_)));
         assert!(err
             .to_string()
-            .contains("anti_spoof.crop_scale must be between 0.0 and 10.0"));
+            .contains("anti_spoof.v2_crop_scale must be between 0.0 and 10.0"));
     }
 
     #[test]
     fn test_load_migrates_legacy_anti_spoof_model_path() {
         let mut config = Config::default();
-        config.models.anti_spoof_path =
+        config.models.anti_spoof_v2_path =
             format!("{}/anti_spoof_minifasnetv2se.onnx", DEFAULT_MODELS_DIR);
 
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
 
         let loaded = Config::load(tmp.path()).unwrap();
-        assert_eq!(loaded.models.anti_spoof_path, default_anti_spoof_path());
+        assert_eq!(loaded.models.anti_spoof_v2_path, default_anti_spoof_v2_path());
     }
 }

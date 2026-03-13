@@ -13,85 +13,94 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
 
-    let config = Config::load(config_path).unwrap_or_default();
+    let config = Config::load_with_fallback(config_path);
 
-    // Check daemon status
     print!("Daemon: ");
     if is_daemon_running(&config.daemon.socket_path) {
-        println!("✓ Running");
+        println!("OK Running");
     } else {
-        println!("✗ Not running");
+        println!("X Not running");
     }
 
-    // Check socket
     print!("Socket: ");
     if Path::new(&config.daemon.socket_path).exists() {
-        println!("✓ {}", config.daemon.socket_path);
+        println!("OK {}", config.daemon.socket_path);
     } else {
-        println!("✗ Not found");
+        println!("X Not found");
     }
 
-    // Check models
     println!("\nModels:");
     print!("  YuNet: ");
     if Path::new(&config.models.yunet_path).exists() {
-        println!("✓ Found");
+        println!("OK Found");
     } else {
-        println!("✗ Not found: {}", config.models.yunet_path);
+        println!("X Not found: {}", config.models.yunet_path);
     }
 
     print!("  SFace: ");
     if Path::new(&config.models.sface_path).exists() {
-        println!("✓ Found");
+        println!("OK Found");
     } else {
-        println!("✗ Not found: {}", config.models.sface_path);
+        println!("X Not found: {}", config.models.sface_path);
     }
 
     print!("  Anti-spoofing: ");
     if config.anti_spoof.enabled {
         println!(
-            "✓ Enabled (threshold: {:.2}, input: {}x{}, scale: {:.1})",
+            "OK Enabled (threshold: {:.2}, mode: {})",
             config.anti_spoof.threshold,
-            config.anti_spoof.input_size,
-            config.anti_spoof.input_size,
-            config.anti_spoof.crop_scale
+            config.anti_spoof.mode.as_str()
         );
     } else {
-        println!("✗ Disabled");
+        println!("X Disabled");
     }
+    println!(
+        "  Valid crop scale (recognition): {:.2}",
+        config.recognition.valid_crop_scale
+    );
 
-    print!("  Anti-spoof model: ");
-    if Path::new(&config.models.anti_spoof_path).exists() {
-        println!("✓ Found");
-    } else if config.anti_spoof.enabled {
-        println!(
-            "! Not found: {} (will fall back to face recognition only)",
-            config.models.anti_spoof_path
-        );
-    } else {
-        println!("✗ Not found: {}", config.models.anti_spoof_path);
-    }
+    println!(
+        "  Anti-spoof V2: {} | input: {}x{} | scale: {:.1}",
+        if Path::new(&config.models.anti_spoof_v2_path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        config.anti_spoof.v2_input_size,
+        config.anti_spoof.v2_input_size,
+        config.anti_spoof.v2_crop_scale
+    );
+    println!("    {}", config.models.anti_spoof_v2_path);
+    println!(
+        "  Anti-spoof V1SE: {} | input: {}x{} | scale: {:.1}",
+        if Path::new(&config.models.anti_spoof_v1se_path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        config.anti_spoof.v1se_input_size,
+        config.anti_spoof.v1se_input_size,
+        config.anti_spoof.v1se_crop_scale
+    );
+    println!("    {}", config.models.anti_spoof_v1se_path);
 
-    // Check camera
     println!("\nCamera:");
     print!("  Device: ");
     if check_camera(&config.video.device) {
-        println!("✓ {}", config.video.device);
+        println!("OK {}", config.video.device);
     } else {
-        println!("✗ Not available: {}", config.video.device);
+        println!("X Not available: {}", config.video.device);
     }
 
-    // Check PAM module
     println!("\nPAM Module:");
     print!("  Library: ");
     let pam_path = "/usr/lib/security/pam_facepass.so";
     if Path::new(pam_path).exists() {
-        println!("✓ Installed");
+        println!("OK Installed");
     } else {
-        println!("✗ Not installed");
+        println!("X Not installed");
     }
 
-    // Check security conditions
     println!("\nSecurity:");
     print!("  SSH Session: ");
     if is_ssh_session() {
@@ -107,7 +116,6 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
         println!("Open");
     }
 
-    // Check registered users
     println!("\nRegistered Users:");
     let storage = FaceStorage::new(&config.storage.data_dir)?;
     let users = storage.list_users()?;
@@ -121,31 +129,28 @@ pub fn run(config_path: &str, _verbose: bool) -> Result<()> {
         }
     }
 
-    // Check config file
     println!("\nConfiguration:");
     print!("  Config file: ");
     if Path::new(config_path).exists() {
-        println!("✓ {}", config_path);
+        println!("OK {}", config_path);
     } else {
-        println!("✗ Not found (using defaults)");
+        println!("X Not found (using defaults)");
     }
 
     print!("  Data directory: ");
     if Path::new(&config.storage.data_dir).exists() {
-        println!("✓ {}", config.storage.data_dir);
+        println!("OK {}", config.storage.data_dir);
     } else {
-        println!("✗ Not found");
+        println!("X Not found");
     }
 
     Ok(())
 }
 
 fn is_daemon_running(socket_path: &str) -> bool {
-    // Check if socket exists and is connectable
     if !Path::new(socket_path).exists() {
         return false;
     }
 
-    // Try to connect
     std::os::unix::net::UnixStream::connect(socket_path).is_ok()
 }

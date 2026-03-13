@@ -32,6 +32,9 @@ pub enum Error {
     #[error("No face detected")]
     NoFaceDetected,
 
+    #[error("Invalid face: {0}")]
+    InvalidFace(String),
+
     #[error("Face not matched (similarity: {0:.4})")]
     FaceNotMatched(f64),
 

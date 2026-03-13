@@ -36,8 +36,19 @@ similarity_threshold = 0.4
 # Maximum faces per user
 max_faces_per_user = 5
 
-# Number of consecutive successful matches required
-required_matches = 1
+# Number of consecutive matched frames required
+consecutive_match_frames = 1
+
+# Minimum number of valid recognition frames required per attempt
+valid_frames = 5
+
+# Whether to stop immediately once valid_frames has been reached
+stop_on_valid_frames = true
+
+# Only faces that are fully inside the frame and can fully cover the
+# configured valid square crop range will enter liveness + recognition.
+# The square crop area is face_area * valid_crop_scale^2.
+valid_crop_scale = 2.7
 
 [security]
 # Skip face recognition for SSH sessions
@@ -67,7 +78,10 @@ yunet_path = "/usr/share/facepass/models/face_detection_yunet_2023mar.onnx"
 sface_path = "/usr/share/facepass/models/face_recognition_sface_2021dec.onnx"
 
 # Path to MiniFASNetV2 anti-spoofing model
-anti_spoof_path = "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx"
+anti_spoof_v2_path = "/usr/share/facepass/models/MiniFASNetV2.onnx"
+
+# Path to MiniFASNetV1SE anti-spoofing model
+anti_spoof_v1se_path = "/usr/share/facepass/models/MiniFASNetV1SE.onnx"
 
 [anti_spoof]
 # Enable anti-spoofing (liveness detection)
@@ -76,12 +90,19 @@ enabled = true
 # Liveness score threshold (0.0-1.0, higher = stricter)
 threshold = 0.5
 
-# Input size for anti-spoofing model (width = height)
-input_size = 80
+# Anti-spoof mode:
+#   "minifasnet_v2"   -> use only MiniFASNetV2
+#   "minifasnet_v1se" -> use only MiniFASNetV1SE
+#   "fusion"          -> use both and average probabilities
+mode = "fusion"
 
-# Crop scale applied to the detected face before liveness inference
-# MiniFASNetV2 uses 2.7, MiniFASNetV1SE uses 4.0
-crop_scale = 2.7
+# MiniFASNetV2 input size and crop scale, matching training distribution
+v2_input_size = 80
+v2_crop_scale = 2.7
+
+# MiniFASNetV1SE input size and crop scale, matching training distribution
+v1se_input_size = 80
+v1se_crop_scale = 4.0
 
 [storage]
 # Path to store face data

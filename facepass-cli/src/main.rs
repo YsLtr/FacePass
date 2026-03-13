@@ -83,9 +83,9 @@ enum Commands {
         #[arg(short, long)]
         user: Option<String>,
 
-        /// Number of frames to test
-        #[arg(short, long, default_value = "30")]
-        frames: u32,
+        /// Override the maximum number of frames to test
+        #[arg(short, long)]
+        frames: Option<u32>,
     },
 
     /// View or edit configuration
