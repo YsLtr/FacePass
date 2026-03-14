@@ -288,6 +288,7 @@ pub fn compute_valid_crop_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencv::core::{CV_32F, CV_8UC3};
 
     fn make_face_row(values: [f32; 15]) -> Mat {
         let mut mat = Mat::zeros(1, 15, CV_32F).unwrap().to_mat().unwrap();
@@ -335,10 +336,10 @@ mod tests {
 
     #[test]
     fn test_valid_crop_rect_can_deform_to_preserve_area() {
-        let frame = Mat::zeros(220, 260, CV_8UC3).unwrap().to_mat().unwrap();
+        let frame = Mat::zeros(180, 260, CV_8UC3).unwrap().to_mat().unwrap();
         let face_row = make_face_row([
-            80.0, 40.0, 150.0, 100.0, 110.0, 75.0, 190.0, 75.0, 150.0, 100.0, 120.0, 120.0,
-            180.0, 120.0, 0.99,
+            80.0, 30.0, 150.0, 100.0, 110.0, 65.0, 190.0, 65.0, 150.0, 90.0, 120.0, 110.0,
+            180.0, 110.0, 0.99,
         ]);
 
         let (rect, valid) = compute_valid_crop_rect(&frame, &face_row, 1.5).unwrap();
