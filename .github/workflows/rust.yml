@@ -1,0 +1,47 @@
+name: Rust Build on Arch
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  # 确保 clang-sys 和 opencv 能找到 libclang 和 opencv 库
+  LIBCLANG_PATH: /usr/lib
+  # 某些情况下需要显式指定 OpenCV 的路径（Arch 默认在 /usr/include/opencv4）
+  # OpenCV_DIR: /usr/lib/cmake/opencv4 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          # 1. 更新系统并安装构建 FacePass 所需的所有核心组件
+          # base-devel: 包含 gcc, make, pkg-config 等
+          # opencv: 核心库
+          # clang/llvm: 编译 bindgen 必需
+          pacman -Syu --noconfirm \
+            base-devel \
+            rustup \
+            clang \
+            llvm \
+            opencv \
+            pkgconf
+
+          # 2. 初始化 Rust 环境
+          rustup default stable
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
