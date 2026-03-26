@@ -214,7 +214,7 @@ pub fn run(
                     )?;
                     if view {
                         let mut display = frame.try_clone()?;
-                        draw_faces(&mut display, &faces)?;
+                        draw_faces(&mut display, &faces, None, None)?;
                         draw_required_crops(
                             &mut display,
                             &faces,
@@ -275,7 +275,12 @@ pub fn run(
                         )?;
                         if view {
                             let mut display = frame.try_clone()?;
-                            draw_faces(&mut display, &faces)?;
+                            draw_faces(
+                                &mut display,
+                                &faces,
+                                Some(&face_row),
+                                Some(liveness_box_color(liveness_status)),
+                            )?;
                             draw_required_crops(
                                 &mut display,
                                 &faces,
@@ -318,7 +323,12 @@ pub fn run(
 
             if view {
                 let mut display = frame.try_clone()?;
-                draw_faces(&mut display, &faces)?;
+                draw_faces(
+                    &mut display,
+                    &faces,
+                    Some(&face_row),
+                    Some(liveness_box_color(liveness_status)),
+                )?;
                 draw_required_crops(&mut display, &faces, config.recognition.valid_crop_scale)?;
                 draw_text(
                     &mut display,
@@ -475,7 +485,12 @@ fn shorten_error(message: &str) -> String {
     }
 }
 
-fn draw_faces(image: &mut Mat, faces: &Mat) -> Result<()> {
+fn draw_faces(
+    image: &mut Mat,
+    faces: &Mat,
+    primary_face: Option<&Mat>,
+    primary_color: Option<Scalar>,
+) -> Result<()> {
     let rows = faces.rows();
     for i in 0..rows {
         let x = *faces.at_2d::<f32>(i, 0)? as i32;
@@ -483,16 +498,48 @@ fn draw_faces(image: &mut Mat, faces: &Mat) -> Result<()> {
         let w = *faces.at_2d::<f32>(i, 2)? as i32;
         let h = *faces.at_2d::<f32>(i, 3)? as i32;
         let rect = Rect::new(x.max(0), y.max(0), w.max(0), h.max(0));
+        let color = if is_primary_face(faces, i, primary_face)? {
+            primary_color.unwrap_or_else(default_face_box_color)
+        } else {
+            default_face_box_color()
+        };
         imgproc::rectangle(
             image,
             rect,
-            Scalar::new(0.0, 255.0, 0.0, 0.0),
+            color,
             2,
             imgproc::LINE_8,
             0,
         )?;
     }
     Ok(())
+}
+
+fn is_primary_face(faces: &Mat, row_idx: i32, primary_face: Option<&Mat>) -> Result<bool> {
+    let Some(primary_face) = primary_face else {
+        return Ok(false);
+    };
+
+    for col in 0..4 {
+        let face_value = *faces.at_2d::<f32>(row_idx, col)?;
+        let primary_value = *primary_face.at_2d::<f32>(0, col)?;
+        if (face_value - primary_value).abs() > 0.5 {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn default_face_box_color() -> Scalar {
+    Scalar::new(0.0, 255.0, 0.0, 0.0)
+}
+
+fn liveness_box_color(status: &str) -> Scalar {
+    match status {
+        "spoof" | "invalid" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+        _ => default_face_box_color(),
+    }
 }
 
 fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()> {
