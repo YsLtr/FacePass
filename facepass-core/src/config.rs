@@ -78,7 +78,7 @@ pub struct DetectionConfig {
     #[serde(default = "default_score_threshold")]
     pub score_threshold: f32,
 
-    /// Non-maximum suppression threshold
+    /// Overlap threshold for removing duplicate face boxes
     #[serde(default = "default_nms_threshold")]
     pub nms_threshold: f32,
 

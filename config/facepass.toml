@@ -21,7 +21,7 @@ frame_height = 480
 # YuNet face detection confidence threshold (0.0 - 1.0)
 score_threshold = 0.9
 
-# Non-maximum suppression threshold
+# Overlap threshold for removing duplicate face boxes (lower = stricter)
 nms_threshold = 0.3
 
 # Input size for YuNet model
