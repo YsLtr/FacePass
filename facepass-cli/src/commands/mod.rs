@@ -4,7 +4,6 @@ pub mod add;
 pub mod cameras;
 pub mod cancel;
 pub mod config;
-pub mod default_group;
 pub mod disable;
 pub mod enable;
 pub mod list;

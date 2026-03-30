@@ -15,14 +15,6 @@ mod commands;
                         authentication for sudo, polkit, and other privilege escalation tools."
 )]
 struct Cli {
-    /// Enable debug mode
-    #[arg(short = 'd', long, global = true)]
-    debug: bool,
-
-    /// Show camera window with overlay info
-    #[arg(short = 'v', long, global = true)]
-    view: bool,
-
     /// Path to configuration file
     #[arg(
         short,
@@ -43,6 +35,14 @@ enum Commands {
         /// Username to add face for (requires root for other users)
         #[arg(short, long)]
         user: Option<String>,
+
+        /// Enable debug mode
+        #[arg(short = 'd', long)]
+        debug: bool,
+
+        /// Show camera window with overlay info
+        #[arg(short = 'v', long)]
+        view: bool,
 
         /// Target face group (index or exact name)
         #[arg(short = 'g', long)]
@@ -89,6 +89,14 @@ enum Commands {
         #[arg(short, long)]
         user: Option<String>,
 
+        /// Enable debug mode
+        #[arg(short = 'd', long)]
+        debug: bool,
+
+        /// Show camera window with overlay info
+        #[arg(short = 'v', long)]
+        view: bool,
+
         /// Target face group (index or exact name)
         #[arg(short = 'g', long)]
         group: Option<String>,
@@ -96,17 +104,6 @@ enum Commands {
         /// Override the maximum number of frames to test
         #[arg(short, long)]
         frames: Option<u32>,
-    },
-
-    /// Change the default face group for a user
-    DefaultGroup {
-        /// Username to update (requires root for other users)
-        #[arg(short, long)]
-        user: Option<String>,
-
-        /// Target face group (index or exact name)
-        #[arg(short = 'g', long)]
-        group: String,
     },
 
     /// View or edit configuration
@@ -127,7 +124,23 @@ enum Commands {
     Cancel,
 
     /// Check system status and requirements
-    Status,
+    Status {
+        /// Show the full status report
+        #[arg(short, long)]
+        show: bool,
+
+        /// Username to update when using --set-default-group
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Target face group (index or exact name) when using --set-default-group
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+
+        /// Set the default face group, optionally passing the group selector inline
+        #[arg(long = "set-default-group", num_args = 0..=1, value_name = "GROUP")]
+        set_default_group: Option<Option<String>>,
+    },
 
     /// Enable face authentication (start daemon)
     Enable,
@@ -142,18 +155,23 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
-    let uses_view_runtime = cli.view
-        && matches!(
-            &cli.command,
-            Commands::Add { .. } | Commands::Test { .. }
-        );
+    let uses_view_runtime = match &cli.command {
+        Commands::Add { view, .. } | Commands::Test { view, .. } => *view,
+        _ => false,
+    };
     let config_path = expand_tilde(&cli.config);
     let is_root = unsafe { libc::geteuid() == 0 };
 
     let result = match cli.command {
-        Commands::Add { user, group, label } => {
+        Commands::Add {
+            user,
+            debug,
+            view,
+            group,
+            label,
+        } => {
             require_root_if_other_user(&user, is_root, "add faces for other users");
-            commands::add::run(&config_path, user, group, label, cli.debug, cli.view)
+            commands::add::run(&config_path, user, group, label, debug, view)
         }
         Commands::Remove { user, group, face } => {
             require_root_if_other_user(&user, is_root, "remove data for other users");
@@ -165,20 +183,26 @@ fn main() {
         }
         Commands::Test {
             user,
+            debug,
+            view,
             group,
             frames,
         } => {
             require_root_if_other_user(&user, is_root, "test faces for other users");
-            commands::test::run(&config_path, user, group, frames, cli.debug, cli.view)
-        }
-        Commands::DefaultGroup { user, group } => {
-            require_root_if_other_user(&user, is_root, "change default groups for other users");
-            commands::default_group::run(&config_path, user, group)
+            commands::test::run(&config_path, user, group, frames, debug, view)
         }
         Commands::Config { show, set } => commands::config::run(&config_path, show, set),
         Commands::Cameras => commands::cameras::run(),
         Commands::Cancel => commands::cancel::run(&config_path),
-        Commands::Status => commands::status::run(&config_path),
+        Commands::Status {
+            show,
+            user,
+            group,
+            set_default_group,
+        } => {
+            require_root_if_other_user(&user, is_root, "change default groups for other users");
+            commands::status::run(&config_path, show, user, group, set_default_group)
+        }
         Commands::Enable => {
             if !is_root {
                 eprintln!("Error: Root privileges required");
