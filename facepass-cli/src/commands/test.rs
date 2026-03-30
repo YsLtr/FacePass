@@ -1,6 +1,6 @@
 //! Test face recognition command
 
-use super::{get_username, CommandInput, CommandKey};
+use super::{get_username, resolve_group_for_read, CommandInput, CommandKey};
 use anyhow::Result;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
@@ -58,6 +58,7 @@ impl TestStats {
 pub fn run(
     config_path: &str,
     user: Option<String>,
+    group: Option<String>,
     frames_override: Option<u32>,
     debug: bool,
     view: bool,
@@ -66,6 +67,8 @@ pub fn run(
 
     let username = get_username(user)?;
     let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
+    let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let group = resolve_group_for_read(&storage, &username, group.as_deref())?;
     let frames = frames_override.unwrap_or(config.video.max_frames);
     let config_source_display = config_source
         .as_ref()
@@ -74,20 +77,24 @@ pub fn run(
 
     if debug {
         println!("Testing face recognition for user: {}", username);
+        println!("Testing face group: {} ({})", group.name, group.id);
     }
 
-    // Load registered faces
-    let storage = FaceStorage::new(&config.storage.data_dir)?;
-    let face_data = storage.load_face_data(&username)?;
+    let face_data = storage.load_face_data_in_group(&username, &group.id)?;
 
     if face_data.is_empty() {
         return Err(anyhow::anyhow!(
-            "No faces registered for user '{}'. Use 'facepass add' first.",
-            username
+            "No faces registered for user '{}' in group '{}'. Use 'facepass add' first.",
+            username,
+            group.name
         ));
     }
 
-    println!("Loaded {} registered face(s)", face_data.len());
+    println!(
+        "Loaded {} registered face(s) from group '{}'",
+        face_data.len(),
+        group.name
+    );
     println!(
         "Config source: {}",
         colorize(&config_source_display, COLOR_CYAN)

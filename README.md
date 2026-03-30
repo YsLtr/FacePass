@@ -125,19 +125,19 @@ auth sufficient pam_facepass.so
 
 ```bash
 # 添加人脸
-sudo facepass add [--user <用户名>] [--label <标签>]
+sudo facepass add [--user <用户名>] [--group <组名或序号>] [--label <标签>]
 
-# 列出人脸
-sudo facepass list [--user <用户名>]
+# 列出用户/人脸组/人脸
+sudo facepass list [--user <用户名>] [--group <组名或序号>] [--depth <1|2|3>]
 
-# 删除人脸
-sudo facepass remove <人脸ID>
+# 删除用户、组或人脸
+sudo facepass remove [--user <用户名>] [--group <组名或序号>] [--face <标签或序号>]
 
-# 清除所有人脸
-sudo facepass clear [--user <用户名>]
+# 切换默认人脸组
+sudo facepass default-group --group <组名或序号> [--user <用户名>]
 
 # 测试识别
-sudo facepass test [--frames <帧数>]
+sudo facepass test [--user <用户名>] [--group <组名或序号>] [--frames <帧数>]
 
 # 查看状态
 sudo facepass status
@@ -159,8 +159,8 @@ timeout = 5                  # 认证超时（秒）
 
 [recognition]
 similarity_threshold = 0.4   # 相似度阈值（越高越严格）
-max_faces_per_user = 5       # 每用户最大人脸数
-required_matches = 1         # 需要连续匹配次数
+max_faces_per_group = 5      # 每个人脸组最大人脸数
+consecutive_match_frames = 1 # 需要连续匹配次数
 
 [security]
 ignore_ssh = true            # SSH 会话跳过

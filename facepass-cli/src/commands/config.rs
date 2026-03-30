@@ -33,8 +33,8 @@ pub fn run(config_path: &str, show: bool, set: Option<String>) -> Result<()> {
             config.recognition.similarity_threshold
         );
         println!(
-            "  max_faces_per_user = {}",
-            config.recognition.max_faces_per_user
+            "  max_faces_per_group = {}",
+            config.recognition.max_faces_per_group
         );
         println!(
             "  consecutive_match_frames = {}",

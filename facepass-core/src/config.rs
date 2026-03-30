@@ -122,9 +122,9 @@ pub struct RecognitionConfig {
     #[serde(default = "default_similarity_threshold")]
     pub similarity_threshold: f64,
 
-    /// Maximum faces per user
-    #[serde(default = "default_max_faces_per_user")]
-    pub max_faces_per_user: u32,
+    /// Maximum faces per group
+    #[serde(default = "default_max_faces_per_group")]
+    pub max_faces_per_group: u32,
 
     /// Required consecutive matched frames
     #[serde(default = "default_consecutive_match_frames")]
@@ -148,7 +148,7 @@ impl Default for RecognitionConfig {
     fn default() -> Self {
         Self {
             similarity_threshold: default_similarity_threshold(),
-            max_faces_per_user: default_max_faces_per_user(),
+            max_faces_per_group: default_max_faces_per_group(),
             consecutive_match_frames: default_consecutive_match_frames(),
             valid_frames: default_valid_frames(),
             stop_on_valid_frames: default_stop_on_valid_frames(),
@@ -160,7 +160,7 @@ impl Default for RecognitionConfig {
 fn default_similarity_threshold() -> f64 {
     0.4
 }
-fn default_max_faces_per_user() -> u32 {
+fn default_max_faces_per_group() -> u32 {
     5
 }
 fn default_consecutive_match_frames() -> u32 {

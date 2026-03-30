@@ -3,8 +3,8 @@
 pub mod add;
 pub mod cameras;
 pub mod cancel;
-pub mod clear;
 pub mod config;
+pub mod default_group;
 pub mod disable;
 pub mod enable;
 pub mod list;
@@ -12,29 +12,61 @@ pub mod remove;
 pub mod status;
 pub mod test;
 
+use anyhow::{anyhow, Result};
+use facepass_core::{models::FaceGroupSummary, storage::FaceStorage};
 use std::env;
 use std::io;
 
 /// Get the target username (from argument or current user)
-pub fn get_username(user_arg: Option<String>) -> anyhow::Result<String> {
+pub fn get_username(user_arg: Option<String>) -> Result<String> {
     if let Some(user) = user_arg {
         return Ok(user);
     }
 
-    // Try SUDO_USER first
     if let Ok(user) = env::var("SUDO_USER") {
         return Ok(user);
     }
 
-    // Try DOAS_USER
     if let Ok(user) = env::var("DOAS_USER") {
         return Ok(user);
     }
 
-    // Fall back to USER
     env::var("USER")
         .or_else(|_| env::var("LOGNAME"))
-        .map_err(|_| anyhow::anyhow!("Could not determine username. Please specify with --user"))
+        .map_err(|_| anyhow!("Could not determine username. Please specify with --user"))
+}
+
+/// Resolve the target group for read/delete operations.
+pub fn resolve_group_for_read(
+    storage: &FaceStorage,
+    username: &str,
+    group_selector: Option<&str>,
+) -> Result<FaceGroupSummary> {
+    match group_selector {
+        Some(selector) => Ok(storage.resolve_group(username, selector)?),
+        None => Ok(storage.get_default_group(username)?),
+    }
+}
+
+/// Resolve the target group for add operations, creating it by name if needed.
+pub fn resolve_group_for_add(
+    storage: &FaceStorage,
+    username: &str,
+    group_selector: Option<&str>,
+) -> Result<FaceGroupSummary> {
+    let Some(selector) = group_selector else {
+        return Ok(storage.ensure_default_group(username)?);
+    };
+
+    if selector.parse::<usize>().is_ok() {
+        return Ok(storage.resolve_group(username, selector)?);
+    }
+
+    if let Some(group) = storage.find_group_by_name(username, selector)? {
+        return Ok(group);
+    }
+
+    Ok(storage.create_group(username, selector)?)
 }
 
 pub enum CommandKey {
@@ -49,11 +81,11 @@ pub struct CommandInput {
 }
 
 impl CommandInput {
-    pub fn capture_single_keys() -> anyhow::Result<Self> {
+    pub fn capture_single_keys() -> Result<Self> {
         Self::capture(true)
     }
 
-    fn capture(raw_mode: bool) -> anyhow::Result<Self> {
+    fn capture(raw_mode: bool) -> Result<Self> {
         let fd = libc::STDIN_FILENO;
         let original_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         if original_flags < 0 {
@@ -96,7 +128,7 @@ impl CommandInput {
         })
     }
 
-    pub fn poll_key(&self) -> anyhow::Result<Option<CommandKey>> {
+    pub fn poll_key(&self) -> Result<Option<CommandKey>> {
         let mut byte = [0u8; 1];
         let read = unsafe { libc::read(self.fd, byte.as_mut_ptr().cast(), 1) };
 
@@ -116,8 +148,7 @@ impl CommandInput {
 
         let key = match byte[0] {
             b'q' | b'Q' => Some(CommandKey::Quit),
-            b'a' | b'A' => Some(CommandKey::Action),
-            b'\n' | b'\r' => None,
+            b'a' | b'A' | b'\n' | b'\r' => Some(CommandKey::Action),
             _ => None,
         };
 

@@ -39,6 +39,8 @@ pub struct FaceRecord {
     pub id: Uuid,
     /// Username this face belongs to
     pub username: String,
+    /// Group this face belongs to
+    pub group_id: Uuid,
     /// User-provided label for this face
     pub label: String,
     /// Unix timestamp when created
@@ -49,11 +51,17 @@ pub struct FaceRecord {
 
 impl FaceRecord {
     /// Create a new face record
-    pub fn new(username: impl Into<String>, label: impl Into<String>, feature: Vec<f32>) -> Self {
+    pub fn new(
+        username: impl Into<String>,
+        group_id: Uuid,
+        label: impl Into<String>,
+        feature: Vec<f32>,
+    ) -> Self {
         let label_str = label.into();
         Self {
             id: Uuid::new_v4(),
             username: username.into(),
+            group_id,
             label: label_str.clone(),
             created_at: chrono_timestamp(),
             data: FaceData::new(label_str, feature),
@@ -66,17 +74,93 @@ impl FaceRecord {
     }
 }
 
+/// Lightweight group summary stored in user metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaceGroupSummary {
+    /// Unique group identifier
+    pub id: Uuid,
+    /// Human-readable group name
+    pub name: String,
+    /// Unix timestamp when created
+    pub created_at: i64,
+    /// Number of faces in the group
+    pub face_count: usize,
+}
+
+impl FaceGroupSummary {
+    /// Create a new empty group summary
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            created_at: chrono_timestamp(),
+            face_count: 0,
+        }
+    }
+}
+
+/// Full group metadata stored alongside the group directory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaceGroupMetadata {
+    /// Unique group identifier
+    pub id: Uuid,
+    /// Human-readable group name
+    pub name: String,
+    /// Unix timestamp when created
+    pub created_at: i64,
+    /// Face IDs stored in this group
+    pub face_ids: Vec<Uuid>,
+}
+
+impl FaceGroupMetadata {
+    /// Create a new empty group
+    pub fn new(name: impl Into<String>) -> Self {
+        let summary = FaceGroupSummary::new(name);
+        Self {
+            id: summary.id,
+            name: summary.name,
+            created_at: summary.created_at,
+            face_ids: Vec::new(),
+        }
+    }
+
+    /// Create a summary view of this group
+    pub fn summary(&self) -> FaceGroupSummary {
+        FaceGroupSummary {
+            id: self.id,
+            name: self.name.clone(),
+            created_at: self.created_at,
+            face_count: self.face_ids.len(),
+        }
+    }
+
+    /// Add a face ID
+    pub fn add_face(&mut self, id: Uuid) {
+        self.face_ids.push(id);
+    }
+
+    /// Remove a face ID
+    pub fn remove_face(&mut self, id: &Uuid) -> bool {
+        if let Some(pos) = self.face_ids.iter().position(|x| x == id) {
+            self.face_ids.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// User metadata for face storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMetadata {
     /// Username
     pub username: String,
-    /// Number of registered faces
-    pub face_count: usize,
+    /// Default face group for recognition
+    pub default_group_id: Option<Uuid>,
+    /// Known groups for this user
+    pub groups: Vec<FaceGroupSummary>,
     /// Last update timestamp
     pub last_updated: i64,
-    /// List of face IDs
-    pub face_ids: Vec<Uuid>,
 }
 
 impl UserMetadata {
@@ -84,29 +168,48 @@ impl UserMetadata {
     pub fn new(username: impl Into<String>) -> Self {
         Self {
             username: username.into(),
-            face_count: 0,
+            default_group_id: None,
+            groups: Vec::new(),
             last_updated: chrono_timestamp(),
-            face_ids: Vec::new(),
         }
     }
 
-    /// Add a face ID
-    pub fn add_face(&mut self, id: Uuid) {
-        self.face_ids.push(id);
-        self.face_count = self.face_ids.len();
+    /// Total faces across all groups
+    pub fn total_face_count(&self) -> usize {
+        self.groups.iter().map(|group| group.face_count).sum()
+    }
+
+    /// Add or update a group summary
+    pub fn upsert_group(&mut self, group: FaceGroupSummary) {
+        if let Some(existing) = self.groups.iter_mut().find(|existing| existing.id == group.id) {
+            *existing = group;
+        } else {
+            self.groups.push(group);
+        }
         self.last_updated = chrono_timestamp();
     }
 
-    /// Remove a face ID
-    pub fn remove_face(&mut self, id: &Uuid) -> bool {
-        if let Some(pos) = self.face_ids.iter().position(|x| x == id) {
-            self.face_ids.remove(pos);
-            self.face_count = self.face_ids.len();
+    /// Remove a group by ID
+    pub fn remove_group(&mut self, id: &Uuid) -> bool {
+        if let Some(pos) = self.groups.iter().position(|group| group.id == *id) {
+            self.groups.remove(pos);
+            if self.default_group_id == Some(*id) {
+                self.default_group_id = self.groups.first().map(|group| group.id);
+            }
             self.last_updated = chrono_timestamp();
             true
         } else {
             false
         }
+    }
+
+    /// Get the current default group
+    pub fn default_group(&self) -> Option<&FaceGroupSummary> {
+        let default_group_id = self.default_group_id?;
+        self.groups
+            .iter()
+            .find(|group| group.id == default_group_id)
+            .or_else(|| self.groups.first())
     }
 }
 
@@ -252,10 +355,23 @@ mod tests {
 
     #[test]
     fn test_face_record_creation() {
-        let record = FaceRecord::new("testuser", "Test Face", vec![0.0; 128]);
+        let group_id = Uuid::new_v4();
+        let record = FaceRecord::new("testuser", group_id, "Test Face", vec![0.0; 128]);
         assert_eq!(record.username, "testuser");
+        assert_eq!(record.group_id, group_id);
         assert_eq!(record.label, "Test Face");
         assert!(record.data.is_valid());
+    }
+
+    #[test]
+    fn test_group_metadata_summary() {
+        let mut group = FaceGroupMetadata::new("primary");
+        let face_id = Uuid::new_v4();
+        group.add_face(face_id);
+
+        let summary = group.summary();
+        assert_eq!(summary.name, "primary");
+        assert_eq!(summary.face_count, 1);
     }
 
     #[test]

@@ -45,14 +45,14 @@ pub fn run(config_path: &str) -> Result<()> {
     println!("    {}", config.models.yunet_path);
 
     println!(
-        "  SFace: {} | similarity: {:.2} | max/user: {} | consecutive: {}",
+        "  SFace: {} | similarity: {:.2} | max/group: {} | consecutive: {}",
         if Path::new(&config.models.sface_path).exists() {
             "OK Found"
         } else {
             "X Missing"
         },
         config.recognition.similarity_threshold,
-        config.recognition.max_faces_per_user,
+        config.recognition.max_faces_per_group,
         config.recognition.consecutive_match_frames
     );
     println!("    {}", config.models.sface_path);
@@ -137,8 +137,18 @@ pub fn run(config_path: &str) -> Result<()> {
         println!("  (none)");
     } else {
         for user in &users {
-            let count = storage.face_count(user)?;
-            println!("  {} ({} face(s))", user, count);
+            let metadata = storage.get_metadata(user)?;
+            let default_group = metadata
+                .default_group()
+                .map(|group| group.name.as_str())
+                .unwrap_or("(none)");
+            println!(
+                "  {} ({} group(s), {} face(s), default: {})",
+                user,
+                metadata.groups.len(),
+                metadata.total_face_count(),
+                default_group
+            );
         }
     }
 

@@ -1,6 +1,6 @@
 //! Add face command
 
-use super::{get_username, CommandInput, CommandKey};
+use super::{get_username, resolve_group_for_add, CommandInput, CommandKey};
 use anyhow::{anyhow, Result};
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector, camera::Camera, config::Config, detection::FaceDetector,
@@ -22,6 +22,7 @@ enum AddLoopOutcome {
 pub fn run(
     config_path: &str,
     user: Option<String>,
+    group: Option<String>,
     label: Option<String>,
     debug: bool,
     view: bool,
@@ -30,20 +31,20 @@ pub fn run(
 
     let username = get_username(user)?;
     let config = Config::load_with_fallback(config_path)?;
+    let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let group = resolve_group_for_add(&storage, &username, group.as_deref())?;
+    let current_count = group.face_count;
 
     if debug {
         println!("Adding face for user: {}", username);
+        println!("Target group: {} ({})", group.name, group.id);
     }
 
-    // Check face count limit
-    let storage = FaceStorage::new(&config.storage.data_dir)?;
-    let current_count = storage.face_count(&username)?;
-
-    if current_count >= config.recognition.max_faces_per_user as usize {
+    if current_count >= config.recognition.max_faces_per_group as usize {
         return Err(anyhow::anyhow!(
             "Maximum face limit reached ({}/{}). Remove some faces first.",
             current_count,
-            config.recognition.max_faces_per_user
+            config.recognition.max_faces_per_group
         ));
     }
 
@@ -414,19 +415,20 @@ pub fn run(
 
     if let Some(feature) = best_feature {
         // Save the face
-        let record = FaceRecord::new(&username, &face_label, feature);
+        let record = FaceRecord::new(&username, group.id, &face_label, feature);
         storage.save_face(&record)?;
 
         println!("\n✓ Face added successfully!");
         println!("  User: {}", username);
+        println!("  Group: {}", group.name);
         println!("  Label: {}", face_label);
         println!("  Confidence: {:.1}%", best_confidence * 100.0);
         println!("  ID: {}", record.id);
 
-        let new_count = storage.face_count(&username)?;
+        let new_count = storage.load_faces_in_group(&username, &group.id)?.len();
         println!(
-            "  Total faces: {}/{}",
-            new_count, config.recognition.max_faces_per_user
+            "  Group faces: {}/{}",
+            new_count, config.recognition.max_faces_per_group
         );
     } else {
         return Err(anyhow::anyhow!(

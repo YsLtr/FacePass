@@ -61,11 +61,12 @@ fn authenticate_sync(
         Err(e) => return AuthResponse::failure(format!("Storage error: {}", e)),
     };
 
-    if !storage.has_faces(username) {
-        return AuthResponse::no_face_data();
-    }
+    let default_group = match storage.get_default_group(username) {
+        Ok(group) => group,
+        Err(_) => return AuthResponse::no_face_data(),
+    };
 
-    let face_data = match storage.load_face_data(username) {
+    let face_data = match storage.load_face_data_in_group(username, &default_group.id) {
         Ok(data) => data,
         Err(e) => return AuthResponse::failure(format!("Failed to load faces: {}", e)),
     };
@@ -74,7 +75,12 @@ fn authenticate_sync(
         return AuthResponse::no_face_data();
     }
 
-    debug!("Loaded {} face(s) for user {}", face_data.len(), username);
+    debug!(
+        "Loaded {} face(s) for user {} from default group {}",
+        face_data.len(),
+        username,
+        default_group.name
+    );
 
     // Initialize components
     let camera = match Camera::open(&config.video) {

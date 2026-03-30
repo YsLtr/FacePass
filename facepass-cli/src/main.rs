@@ -1,6 +1,6 @@
 //! FacePass CLI - Face authentication management tool
 
-use clap::{Parser, Subcommand};
+use clap::{value_parser, Parser, Subcommand};
 
 mod commands;
 
@@ -38,43 +38,49 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Add a new face for the current user
+    /// Add a new face for a user
     Add {
-        /// Username to add face for (requires root)
+        /// Username to add face for (requires root for other users)
         #[arg(short, long)]
         user: Option<String>,
+
+        /// Target face group (index or exact name)
+        #[arg(short = 'g', long)]
+        group: Option<String>,
 
         /// Label for this face (e.g., "with glasses", "normal")
         #[arg(short, long)]
         label: Option<String>,
     },
 
-    /// Remove a registered face
+    /// Remove users, groups, or faces depending on selector scope
     Remove {
-        /// Face index to remove (use 'list' to see indices)
-        index: usize,
-
-        /// Username (requires root for other users)
+        /// Username to remove from (requires root for other users)
         #[arg(short, long)]
         user: Option<String>,
+
+        /// Target face group (index or exact name)
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+
+        /// Face selector(s) within the target group (index or exact label)
+        #[arg(short = 'f', long = "face")]
+        face: Vec<String>,
     },
 
-    /// List all registered faces for a user
+    /// List users, groups, or faces
     List {
-        /// Username to list faces for (requires root for other users)
-        #[arg(short, long)]
-        user: Option<String>,
-    },
-
-    /// Clear all faces for a user
-    Clear {
-        /// Username to clear faces for (requires root for other users)
+        /// Username to list for (requires root for other users)
         #[arg(short, long)]
         user: Option<String>,
 
-        /// Skip confirmation prompt
-        #[arg(short, long)]
-        force: bool,
+        /// Limit output to a face group (index or exact name)
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+
+        /// Display depth: 1=user summary, 2=groups, 3=faces
+        #[arg(long, default_value_t = 3, value_parser = value_parser!(u8).range(1..=3))]
+        depth: u8,
     },
 
     /// Test face recognition
@@ -83,9 +89,24 @@ enum Commands {
         #[arg(short, long)]
         user: Option<String>,
 
+        /// Target face group (index or exact name)
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+
         /// Override the maximum number of frames to test
         #[arg(short, long)]
         frames: Option<u32>,
+    },
+
+    /// Change the default face group for a user
+    DefaultGroup {
+        /// Username to update (requires root for other users)
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Target face group (index or exact name)
+        #[arg(short = 'g', long)]
+        group: String,
     },
 
     /// View or edit configuration
@@ -116,56 +137,43 @@ enum Commands {
 }
 
 fn main() {
-    // Initialize logger
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp(None)
         .init();
 
     let cli = Cli::parse();
-    let uses_view_runtime =
-        cli.view && matches!(&cli.command, Commands::Add { .. } | Commands::Test { .. });
-
-    // Expand ~ to home directory
+    let uses_view_runtime = cli.view
+        && matches!(
+            &cli.command,
+            Commands::Add { .. } | Commands::Test { .. }
+        );
     let config_path = expand_tilde(&cli.config);
-
-    // Check root privileges for most commands
     let is_root = unsafe { libc::geteuid() == 0 };
 
     let result = match cli.command {
-        Commands::Add { user, label } => {
-            if user.is_some() && !is_root {
-                eprintln!("Error: Root privileges required to add faces for other users");
-                std::process::exit(1);
-            }
-            commands::add::run(&config_path, user, label, cli.debug, cli.view)
+        Commands::Add { user, group, label } => {
+            require_root_if_other_user(&user, is_root, "add faces for other users");
+            commands::add::run(&config_path, user, group, label, cli.debug, cli.view)
         }
-        Commands::Remove { index, user } => {
-            if user.is_some() && !is_root {
-                eprintln!("Error: Root privileges required to remove faces for other users");
-                std::process::exit(1);
-            }
-            commands::remove::run(&config_path, user, index)
+        Commands::Remove { user, group, face } => {
+            require_root_if_other_user(&user, is_root, "remove data for other users");
+            commands::remove::run(&config_path, user, group, face)
         }
-        Commands::List { user } => {
-            if user.is_some() && !is_root {
-                eprintln!("Error: Root privileges required to list faces for other users");
-                std::process::exit(1);
-            }
-            commands::list::run(&config_path, user)
+        Commands::List { user, group, depth } => {
+            require_root_if_other_user(&user, is_root, "list data for other users");
+            commands::list::run(&config_path, user, group, depth)
         }
-        Commands::Clear { user, force } => {
-            if user.is_some() && !is_root {
-                eprintln!("Error: Root privileges required to clear faces for other users");
-                std::process::exit(1);
-            }
-            commands::clear::run(&config_path, user, force)
+        Commands::Test {
+            user,
+            group,
+            frames,
+        } => {
+            require_root_if_other_user(&user, is_root, "test faces for other users");
+            commands::test::run(&config_path, user, group, frames, cli.debug, cli.view)
         }
-        Commands::Test { user, frames } => {
-            if user.is_some() && !is_root {
-                eprintln!("Error: Root privileges required to test faces for other users");
-                std::process::exit(1);
-            }
-            commands::test::run(&config_path, user, frames, cli.debug, cli.view)
+        Commands::DefaultGroup { user, group } => {
+            require_root_if_other_user(&user, is_root, "change default groups for other users");
+            commands::default_group::run(&config_path, user, group)
         }
         Commands::Config { show, set } => commands::config::run(&config_path, show, set),
         Commands::Cameras => commands::cameras::run(),
@@ -200,6 +208,29 @@ fn main() {
     }
 }
 
+fn require_root_if_other_user(user: &Option<String>, is_root: bool, action: &str) {
+    if is_root {
+        return;
+    }
+
+    let Some(target_user) = user.as_deref() else {
+        return;
+    };
+
+    let current_user = match commands::get_username(None) {
+        Ok(user) => user,
+        Err(_) => {
+            eprintln!("Error: Could not determine current username");
+            std::process::exit(1);
+        }
+    };
+
+    if target_user != current_user {
+        eprintln!("Error: Root privileges required to {}", action);
+        std::process::exit(1);
+    }
+}
+
 /// Expand ~ to home directory
 fn expand_tilde(path: &str) -> String {
     if path.starts_with("~/") {
@@ -216,7 +247,6 @@ fn immediate_exit(code: i32) -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
 
-    // OpenCV HighGUI with the Qt backend is unstable during process teardown here.
     unsafe {
         libc::_exit(code);
     }
