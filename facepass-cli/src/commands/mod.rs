@@ -2,6 +2,7 @@
 
 pub mod add;
 pub mod cameras;
+pub mod cancel;
 pub mod clear;
 pub mod config;
 pub mod disable;

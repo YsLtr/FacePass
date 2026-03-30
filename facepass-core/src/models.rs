@@ -135,6 +135,22 @@ impl AuthRequest {
     }
 }
 
+/// IPC cancellation request message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelRequest {
+    /// Message type
+    pub msg_type: String,
+}
+
+impl CancelRequest {
+    /// Create a new cancellation request
+    pub fn new() -> Self {
+        Self {
+            msg_type: "cancel".to_string(),
+        }
+    }
+}
+
 /// IPC Authentication response message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthResponse {
@@ -163,6 +179,16 @@ impl AuthResponse {
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             success: false,
+            message: message.into(),
+            confidence: None,
+            matched_label: None,
+        }
+    }
+
+    /// Create a generic response message
+    pub fn message(success: bool, message: impl Into<String>) -> Self {
+        Self {
+            success,
             message: message.into(),
             confidence: None,
             matched_label: None,

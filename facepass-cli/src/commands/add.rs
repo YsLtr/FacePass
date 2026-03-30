@@ -1,15 +1,10 @@
 //! Add face command
 
-use super::{CommandInput, CommandKey, get_username};
+use super::{get_username, CommandInput, CommandKey};
 use anyhow::{anyhow, Result};
 use facepass_core::{
-    anti_spoofing::AntiSpoofDetector,
-    camera::Camera,
-    config::Config,
-    detection::FaceDetector,
-    face_validation::select_primary_face,
-    models::FaceRecord,
-    recognition::FaceRecognizer,
+    anti_spoofing::AntiSpoofDetector, camera::Camera, config::Config, detection::FaceDetector,
+    face_validation::select_primary_face, models::FaceRecord, recognition::FaceRecognizer,
     storage::FaceStorage,
 };
 use opencv::{
@@ -201,41 +196,38 @@ pub fn run(
                 }
             };
 
-            let face_row = match select_primary_face(
-                &frame,
-                &faces,
-                config.recognition.valid_crop_scale,
-            ) {
-                Ok(face_row) => face_row,
-                Err(facepass_core::Error::InvalidFace(reason)) => {
-                    print_status_line(
-                        &mut last_status_width,
-                        &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
-                    )?;
-                    if view {
-                        let mut display = frame.try_clone()?;
-                        draw_faces(&mut display, &faces, None, None)?;
-                        draw_required_crops(
-                            &mut display,
-                            &faces,
-                            config.recognition.valid_crop_scale,
+            let face_row =
+                match select_primary_face(&frame, &faces, config.recognition.valid_crop_scale) {
+                    Ok(face_row) => face_row,
+                    Err(facepass_core::Error::InvalidFace(reason)) => {
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
                         )?;
-                        draw_text(
-                            &mut display,
-                            0,
-                            &format!("Invalid face: {}", reason),
-                            Scalar::new(0.0, 0.0, 255.0, 0.0),
-                        )?;
-                        highgui::imshow(WINDOW_NAME, &display)?;
-                        if should_abort(highgui::wait_key(1)?) {
-                            clear_status_line(&mut last_status_width)?;
-                            return Ok(AddLoopOutcome::Cancelled);
+                        if view {
+                            let mut display = frame.try_clone()?;
+                            draw_faces(&mut display, &faces, None, None)?;
+                            draw_required_crops(
+                                &mut display,
+                                &faces,
+                                config.recognition.valid_crop_scale,
+                            )?;
+                            draw_text(
+                                &mut display,
+                                0,
+                                &format!("Invalid face: {}", reason),
+                                Scalar::new(0.0, 0.0, 255.0, 0.0),
+                            )?;
+                            highgui::imshow(WINDOW_NAME, &display)?;
+                            if should_abort(highgui::wait_key(1)?) {
+                                clear_status_line(&mut last_status_width)?;
+                                return Ok(AddLoopOutcome::Cancelled);
+                            }
                         }
+                        continue;
                     }
-                    continue;
-                }
-                Err(_) => continue,
-            };
+                    Err(_) => continue,
+                };
 
             let confidence = *face_row.at_2d::<f32>(0, 14)?;
 
@@ -503,14 +495,7 @@ fn draw_faces(
         } else {
             default_face_box_color()
         };
-        imgproc::rectangle(
-            image,
-            rect,
-            color,
-            2,
-            imgproc::LINE_8,
-            0,
-        )?;
+        imgproc::rectangle(image, rect, color, 2, imgproc::LINE_8, 0)?;
     }
     Ok(())
 }
@@ -574,9 +559,11 @@ fn close_view_window(window_name: &str, view: bool) -> Result<()> {
 fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {
     for row_idx in 0..faces.rows() {
         let face_row = faces.row(row_idx)?.try_clone()?;
-        if let Ok((rect, valid)) =
-            facepass_core::face_validation::compute_valid_crop_rect(image, &face_row, valid_crop_scale)
-        {
+        if let Ok((rect, valid)) = facepass_core::face_validation::compute_valid_crop_rect(
+            image,
+            &face_row,
+            valid_crop_scale,
+        ) {
             let color = if valid {
                 Scalar::new(0.0, 255.0, 255.0, 0.0)
             } else {

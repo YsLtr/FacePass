@@ -345,7 +345,6 @@ pub struct AntiSpoofConfig {
     /// Crop scale for MiniFASNetV1SE
     #[serde(default = "default_v1se_crop_scale")]
     pub v1se_crop_scale: f32,
-
 }
 
 impl Default for AntiSpoofConfig {
@@ -616,9 +615,7 @@ impl Config {
             ));
         }
 
-        if self.recognition.valid_crop_scale <= 0.0
-            || self.recognition.valid_crop_scale > 10.0
-        {
+        if self.recognition.valid_crop_scale <= 0.0 || self.recognition.valid_crop_scale > 10.0 {
             return Err(Error::Config(
                 "recognition.valid_crop_scale must be between 0.0 and 10.0".to_string(),
             ));
@@ -748,9 +745,9 @@ mod tests {
 
         let err = config.validate().unwrap_err();
         assert!(matches!(err, Error::Config(_)));
-        assert!(err
-            .to_string()
-            .contains("video.max_frames (10) must be greater than or equal to recognition.valid_frames (20)"));
+        assert!(err.to_string().contains(
+            "video.max_frames (10) must be greater than or equal to recognition.valid_frames (20)"
+        ));
     }
 
     #[test]

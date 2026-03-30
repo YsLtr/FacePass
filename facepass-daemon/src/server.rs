@@ -1,9 +1,10 @@
 //! Unix socket server for the daemon
 
 use crate::auth;
+use crate::control::AuthControl;
 use anyhow::Result;
 use facepass_core::config::Config;
-use facepass_core::models::{AuthRequest, AuthResponse};
+use facepass_core::models::{AuthRequest, AuthResponse, CancelRequest};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -11,7 +12,11 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 
 /// Run the Unix socket server
-pub async fn run(config: Arc<Config>, mut shutdown: broadcast::Receiver<()>) -> Result<()> {
+pub async fn run(
+    config: Arc<Config>,
+    auth_control: Arc<AuthControl>,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<()> {
     let socket_path = &config.daemon.socket_path;
 
     // Remove existing socket if it exists
@@ -36,8 +41,9 @@ pub async fn run(config: Arc<Config>, mut shutdown: broadcast::Receiver<()>) -> 
                 match result {
                     Ok((stream, _addr)) => {
                         let config = config.clone();
+                        let auth_control = auth_control.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, config).await {
+                            if let Err(e) = handle_client(stream, config, auth_control).await {
                                 error!("Client handler error: {}", e);
                             }
                         });
@@ -62,7 +68,11 @@ pub async fn run(config: Arc<Config>, mut shutdown: broadcast::Receiver<()>) -> 
 }
 
 /// Handle a single client connection
-async fn handle_client(stream: UnixStream, config: Arc<Config>) -> Result<()> {
+async fn handle_client(
+    stream: UnixStream,
+    config: Arc<Config>,
+    auth_control: Arc<AuthControl>,
+) -> Result<()> {
     debug!("New client connected");
 
     let (reader, mut writer) = stream.into_split();
@@ -82,44 +92,95 @@ async fn handle_client(stream: UnixStream, config: Arc<Config>) -> Result<()> {
         }
     }
 
-    // Parse request
-    let request: AuthRequest = match serde_json::from_str(&line) {
-        Ok(r) => r,
+    let mut auth_user: Option<String> = None;
+    let response = match extract_message_type(&line) {
+        Ok(msg_type) if msg_type == "auth" => {
+            let request = match serde_json::from_str::<AuthRequest>(&line) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Invalid auth request: {}", e);
+                    let response = AuthResponse::failure("Invalid auth request format");
+                    send_response(&mut writer, &response).await?;
+                    return Ok(());
+                }
+            };
+
+            if request.msg_type != "auth" {
+                AuthResponse::failure("Unsupported message type")
+            } else {
+                auth_user = Some(request.username.clone());
+                info!(
+                    "Auth request: user={}, source={}, timeout={}",
+                    request.username, request.source, request.timeout
+                );
+                auth::authenticate(&config, &auth_control, &request).await
+            }
+        }
+        Ok(msg_type) if msg_type == "cancel" => {
+            let request: CancelRequest = match serde_json::from_str(&line) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Invalid cancel request: {}", e);
+                    let response = AuthResponse::failure("Invalid cancel request format");
+                    send_response(&mut writer, &response).await?;
+                    return Ok(());
+                }
+            };
+
+            if request.msg_type != "cancel" {
+                AuthResponse::failure("Unsupported message type")
+            } else if auth_control.cancel_current() {
+                info!("Cancellation requested for current authentication");
+                AuthResponse::message(true, "Cancellation requested")
+            } else {
+                AuthResponse::failure("No active authentication to cancel")
+            }
+        }
+        Ok(msg_type) => {
+            warn!("Unsupported request type: {}", msg_type);
+            AuthResponse::failure("Unsupported message type")
+        }
         Err(e) => {
             warn!("Invalid request: {}", e);
-            let response = AuthResponse::failure("Invalid request format");
-            let response_json = serde_json::to_string(&response)?;
-            writer.write_all(response_json.as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-            return Ok(());
+            AuthResponse::failure("Invalid request format")
         }
     };
 
-    info!(
-        "Auth request: user={}, source={}, timeout={}",
-        request.username, request.source, request.timeout
-    );
-
-    // Process authentication
-    let response = auth::authenticate(&config, &request).await;
-
     // Send response
-    let response_json = serde_json::to_string(&response)?;
-    writer.write_all(response_json.as_bytes()).await?;
-    writer.write_all(b"\n").await?;
+    send_response(&mut writer, &response).await?;
 
-    if response.success {
-        info!(
-            "Auth success: user={}, confidence={:.2}%",
-            request.username,
-            response.confidence.unwrap_or(0.0) * 100.0
-        );
-    } else {
-        info!(
-            "Auth failed: user={}, reason={}",
-            request.username, response.message
-        );
+    if let Some(username) = auth_user {
+        if response.success {
+            info!(
+                "Auth success: user={}, confidence={:.2}%",
+                username,
+                response.confidence.unwrap_or(0.0) * 100.0
+            );
+        } else {
+            info!(
+                "Auth failed: user={}, reason={}",
+                username, response.message
+            );
+        }
     }
 
+    Ok(())
+}
+
+fn extract_message_type(line: &str) -> Result<String> {
+    let value: serde_json::Value = serde_json::from_str(line)?;
+    value
+        .get("msg_type")
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .ok_or_else(|| anyhow::anyhow!("Missing msg_type"))
+}
+
+async fn send_response(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    response: &AuthResponse,
+) -> Result<()> {
+    let response_json = serde_json::to_string(response)?;
+    writer.write_all(response_json.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
     Ok(())
 }

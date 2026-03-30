@@ -102,6 +102,9 @@ enum Commands {
     /// List available camera devices
     Cameras,
 
+    /// Cancel the current face authentication attempt
+    Cancel,
+
     /// Check system status and requirements
     Status,
 
@@ -119,7 +122,8 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
-    let uses_view_runtime = cli.view && matches!(&cli.command, Commands::Add { .. } | Commands::Test { .. });
+    let uses_view_runtime =
+        cli.view && matches!(&cli.command, Commands::Add { .. } | Commands::Test { .. });
 
     // Expand ~ to home directory
     let config_path = expand_tilde(&cli.config);
@@ -165,6 +169,7 @@ fn main() {
         }
         Commands::Config { show, set } => commands::config::run(&config_path, show, set),
         Commands::Cameras => commands::cameras::run(),
+        Commands::Cancel => commands::cancel::run(&config_path),
         Commands::Status => commands::status::run(&config_path),
         Commands::Enable => {
             if !is_root {

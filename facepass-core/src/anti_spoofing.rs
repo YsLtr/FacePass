@@ -88,13 +88,7 @@ impl AntiSpoofDetector {
                 Error::AntiSpoofing(format!("Failed to lock {} net: {}", model.label, e))
             })?;
 
-            let probs = forward_probs(
-                &mut net,
-                frame,
-                bbox,
-                model.input_size,
-                model.crop_scale,
-            )?;
+            let probs = forward_probs(&mut net, frame, bbox, model.input_size, model.crop_scale)?;
 
             if probs.len() < 2 {
                 return Err(Error::AntiSpoofing(format!(
@@ -250,11 +244,7 @@ fn crop_face(image: &Mat, bbox: [f32; 4], scale_limit: f32, out_size: i32) -> Re
     Ok(resized)
 }
 
-fn normalize_roi_rect(
-    image_w: i32,
-    image_h: i32,
-    rect: (i32, i32, i32, i32),
-) -> Result<Rect> {
+fn normalize_roi_rect(image_w: i32, image_h: i32, rect: (i32, i32, i32, i32)) -> Result<Rect> {
     if image_w <= 0 || image_h <= 0 {
         return Err(Error::AntiSpoofing(
             "Cannot crop anti-spoof ROI from an empty frame".to_string(),
@@ -296,7 +286,9 @@ fn compute_model_crop_rect(
 
     let [_, _, box_w, box_h] = bbox;
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     let target_area = box_w * scale_limit * box_h * scale_limit;
@@ -341,7 +333,9 @@ fn compute_flexible_crop_rect(
     let [x, y, box_w, box_h] = bbox;
 
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     let new_w = box_w * scale_limit;
@@ -394,7 +388,9 @@ fn build_containing_rect(
     let [x, y, box_w, box_h] = bbox;
 
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     if rect_w < box_w || rect_h < box_h || rect_w > frame_w || rect_h > frame_h {
@@ -569,7 +565,10 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
         .iter()
         .copied()
         .fold(f32::NEG_INFINITY, |acc, value| acc.max(value));
-    let exps: Vec<f32> = logits.iter().map(|value| (*value - max_val).exp()).collect();
+    let exps: Vec<f32> = logits
+        .iter()
+        .map(|value| (*value - max_val).exp())
+        .collect();
     let sum: f32 = exps.iter().sum();
     exps.into_iter().map(|value| value / sum).collect()
 }

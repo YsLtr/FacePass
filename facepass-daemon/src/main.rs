@@ -1,9 +1,11 @@
 //! FacePass Daemon - Face authentication service
 
 mod auth;
+mod control;
 mod server;
 
 use anyhow::Result;
+use control::AuthControl;
 use facepass_core::config::Config;
 use log::{error, info};
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -36,6 +38,7 @@ async fn main() -> Result<()> {
 
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
+    let auth_control = Arc::new(AuthControl::default());
 
     // Setup signal handlers
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
@@ -62,7 +65,7 @@ async fn main() -> Result<()> {
     write_pid_file(&config.daemon.pid_file)?;
 
     // Start the server
-    let server_result = server::run(config.clone(), shutdown_tx.subscribe()).await;
+    let server_result = server::run(config.clone(), auth_control, shutdown_tx.subscribe()).await;
 
     // Cleanup
     cleanup(&config.daemon.pid_file);

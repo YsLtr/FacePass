@@ -1,6 +1,6 @@
 //! Test face recognition command
 
-use super::{CommandInput, CommandKey, get_username};
+use super::{get_username, CommandInput, CommandKey};
 use anyhow::Result;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
@@ -88,7 +88,10 @@ pub fn run(
     }
 
     println!("Loaded {} registered face(s)", face_data.len());
-    println!("Config source: {}", colorize(&config_source_display, COLOR_CYAN));
+    println!(
+        "Config source: {}",
+        colorize(&config_source_display, COLOR_CYAN)
+    );
     println!("Initializing camera...\n");
 
     // Initialize components
@@ -136,7 +139,11 @@ pub fn run(
         } else {
             frames.to_string()
         },
-        if debug { " (ignored in debug mode)" } else { "" }
+        if debug {
+            " (ignored in debug mode)"
+        } else {
+            ""
+        }
     );
     println!(
         "Timeout: {}{}",
@@ -145,7 +152,11 @@ pub fn run(
         } else {
             format!("{}s", config.video.timeout)
         },
-        if debug { " (ignored in debug mode)" } else { "" }
+        if debug {
+            " (ignored in debug mode)"
+        } else {
+            ""
+        }
     );
     if view {
         println!("Press Enter/Esc in the window, or q in the terminal.\n");
@@ -292,49 +303,46 @@ pub fn run(
                 }
             };
 
-            let face_row = match select_primary_face(
-                &frame,
-                &faces,
-                config.recognition.valid_crop_scale,
-            ) {
-                Ok(face_row) => face_row,
-                Err(facepass_core::Error::InvalidFace(reason)) => {
-                    stats.detected_face_frames += 1;
-                    stats.invalid_face_frames += 1;
-                    consecutive_matches = 0;
-                    print_status_line(
-                        &mut last_status_width,
-                        &format!(
-                            "Invalid face ({}) {}",
-                            reason,
-                            format_frame_progress(frame_idx, frames)
-                        ),
-                    )?;
-                    if view {
-                        let mut display = frame.try_clone()?;
-                        draw_faces(&mut display, &faces, None, None)?;
-                        draw_required_crops(
-                            &mut display,
-                            &faces,
-                            config.recognition.valid_crop_scale,
+            let face_row =
+                match select_primary_face(&frame, &faces, config.recognition.valid_crop_scale) {
+                    Ok(face_row) => face_row,
+                    Err(facepass_core::Error::InvalidFace(reason)) => {
+                        stats.detected_face_frames += 1;
+                        stats.invalid_face_frames += 1;
+                        consecutive_matches = 0;
+                        print_status_line(
+                            &mut last_status_width,
+                            &format!(
+                                "Invalid face ({}) {}",
+                                reason,
+                                format_frame_progress(frame_idx, frames)
+                            ),
                         )?;
-                        draw_text(
-                            &mut display,
-                            0,
-                            &format!("Invalid face: {}", reason),
-                            Scalar::new(0.0, 0.0, 255.0, 0.0),
-                        )?;
-                        highgui::imshow(WINDOW_NAME, &display)?;
-                        let key = highgui::wait_key(1)?;
-                        if should_end(key) {
-                            stop_reason = "user_stopped".to_string();
-                            break;
+                        if view {
+                            let mut display = frame.try_clone()?;
+                            draw_faces(&mut display, &faces, None, None)?;
+                            draw_required_crops(
+                                &mut display,
+                                &faces,
+                                config.recognition.valid_crop_scale,
+                            )?;
+                            draw_text(
+                                &mut display,
+                                0,
+                                &format!("Invalid face: {}", reason),
+                                Scalar::new(0.0, 0.0, 255.0, 0.0),
+                            )?;
+                            highgui::imshow(WINDOW_NAME, &display)?;
+                            let key = highgui::wait_key(1)?;
+                            if should_end(key) {
+                                stop_reason = "user_stopped".to_string();
+                                break;
+                            }
                         }
+                        continue;
                     }
-                    continue;
-                }
-                Err(_) => continue,
-            };
+                    Err(_) => continue,
+                };
             stats.detected_face_frames += 1;
             stats.valid_frames += 1;
             let confidence = *face_row.at_2d::<f32>(0, 14)?;
@@ -595,8 +603,7 @@ pub fn run(
     loop_result?;
 
     let valid_frame_threshold_met = stats.valid_frames >= required_valid_frames;
-    let consecutive_threshold_met =
-        stats.max_consecutive_matches >= consecutive_match_frames;
+    let consecutive_threshold_met = stats.max_consecutive_matches >= consecutive_match_frames;
     let anti_spoof_failed = stop_reason == "anti_spoof_error";
     let valid_frame_requirement_enabled = required_valid_frames > 0;
     let result_valid = (!valid_frame_requirement_enabled || valid_frame_threshold_met)
@@ -634,7 +641,10 @@ pub fn run(
         "  Stop reason: {}",
         colorize(&stop_reason, stop_reason_color(&stop_reason))
     );
-    println!("  Config source: {}", colorize(&config_source_display, COLOR_CYAN));
+    println!(
+        "  Config source: {}",
+        colorize(&config_source_display, COLOR_CYAN)
+    );
     println!();
     println!("{}", colorize("  Thresholds", COLOR_WHITE_BOLD));
     if valid_frame_requirement_enabled {
@@ -649,7 +659,11 @@ pub fn run(
                 }
             ),
             required_valid_frames,
-            if valid_frame_threshold_met { "met" } else { "not met" }
+            if valid_frame_threshold_met {
+                "met"
+            } else {
+                "not met"
+            }
         );
     } else {
         println!(
@@ -691,7 +705,11 @@ pub fn run(
         } else {
             format!("{}s", config.video.timeout)
         },
-        if debug { " (ignored in debug mode)" } else { "" }
+        if debug {
+            " (ignored in debug mode)"
+        } else {
+            ""
+        }
     );
     println!(
         "  Frame limit: {}{}",
@@ -700,7 +718,11 @@ pub fn run(
         } else {
             frames.to_string()
         },
-        if debug { " (ignored in debug mode)" } else { "" }
+        if debug {
+            " (ignored in debug mode)"
+        } else {
+            ""
+        }
     );
     println!();
     println!("{}", colorize("  Frame Stats", COLOR_WHITE_BOLD));
@@ -849,14 +871,7 @@ fn draw_faces(
         } else {
             default_face_box_color()
         };
-        imgproc::rectangle(
-            image,
-            rect,
-            color,
-            2,
-            imgproc::LINE_8,
-            0,
-        )?;
+        imgproc::rectangle(image, rect, color, 2, imgproc::LINE_8, 0)?;
     }
     Ok(())
 }
@@ -916,9 +931,11 @@ fn close_view_window(window_name: &str, view: bool) -> Result<()> {
 fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {
     for row_idx in 0..faces.rows() {
         let face_row = faces.row(row_idx)?.try_clone()?;
-        if let Ok((rect, valid)) =
-            facepass_core::face_validation::compute_valid_crop_rect(image, &face_row, valid_crop_scale)
-        {
+        if let Ok((rect, valid)) = facepass_core::face_validation::compute_valid_crop_rect(
+            image,
+            &face_row,
+            valid_crop_scale,
+        ) {
             let color = if valid {
                 Scalar::new(0.0, 255.0, 255.0, 0.0)
             } else {

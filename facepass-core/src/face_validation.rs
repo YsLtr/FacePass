@@ -56,7 +56,9 @@ pub fn validate_face(frame: &Mat, face_row: &Mat, valid_crop_scale: f32) -> Resu
 
     let [x, y, box_w, box_h] = face_row_to_bbox(face_row)?;
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     let x2 = x + box_w;
@@ -126,8 +128,14 @@ pub fn face_row_to_landmarks(face_row: &Mat) -> Result<[(f32, f32); 5]> {
         (*face_row.at_2d::<f32>(0, 4)?, *face_row.at_2d::<f32>(0, 5)?),
         (*face_row.at_2d::<f32>(0, 6)?, *face_row.at_2d::<f32>(0, 7)?),
         (*face_row.at_2d::<f32>(0, 8)?, *face_row.at_2d::<f32>(0, 9)?),
-        (*face_row.at_2d::<f32>(0, 10)?, *face_row.at_2d::<f32>(0, 11)?),
-        (*face_row.at_2d::<f32>(0, 12)?, *face_row.at_2d::<f32>(0, 13)?),
+        (
+            *face_row.at_2d::<f32>(0, 10)?,
+            *face_row.at_2d::<f32>(0, 11)?,
+        ),
+        (
+            *face_row.at_2d::<f32>(0, 12)?,
+            *face_row.at_2d::<f32>(0, 13)?,
+        ),
     ])
 }
 
@@ -145,7 +153,9 @@ fn compute_target_crop_area(bbox: [f32; 4], scale_limit: f32) -> Result<f32> {
     let [_, _, box_w, box_h] = bbox;
 
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     Ok(box_w * box_h * scale_limit * scale_limit)
@@ -161,7 +171,9 @@ fn build_containing_rect(
     let [x, y, box_w, box_h] = bbox;
 
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     if rect_w < box_w || rect_h < box_h || rect_w > frame_w || rect_h > frame_h {
@@ -258,7 +270,9 @@ pub fn compute_valid_crop_rect(
 
     let [x, y, box_w, box_h] = bbox;
     if box_w <= 0.0 || box_h <= 0.0 {
-        return Err(Error::InvalidFace("Detected face bbox is invalid".to_string()));
+        return Err(Error::InvalidFace(
+            "Detected face bbox is invalid".to_string(),
+        ));
     }
 
     let target_area = compute_target_crop_area(bbox, scale_limit)?;
@@ -338,8 +352,8 @@ mod tests {
     fn test_valid_crop_rect_can_deform_to_preserve_area() {
         let frame = Mat::zeros(180, 260, CV_8UC3).unwrap().to_mat().unwrap();
         let face_row = make_face_row([
-            80.0, 30.0, 150.0, 100.0, 110.0, 65.0, 190.0, 65.0, 150.0, 90.0, 120.0, 110.0,
-            180.0, 110.0, 0.99,
+            80.0, 30.0, 150.0, 100.0, 110.0, 65.0, 190.0, 65.0, 150.0, 90.0, 120.0, 110.0, 180.0,
+            110.0, 0.99,
         ]);
 
         let (rect, valid) = compute_valid_crop_rect(&frame, &face_row, 1.5).unwrap();
