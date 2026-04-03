@@ -181,7 +181,11 @@ impl UserMetadata {
 
     /// Add or update a group summary
     pub fn upsert_group(&mut self, group: FaceGroupSummary) {
-        if let Some(existing) = self.groups.iter_mut().find(|existing| existing.id == group.id) {
+        if let Some(existing) = self
+            .groups
+            .iter_mut()
+            .find(|existing| existing.id == group.id)
+        {
             *existing = group;
         } else {
             self.groups.push(group);
