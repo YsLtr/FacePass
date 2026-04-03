@@ -51,6 +51,10 @@ enum Commands {
         /// Label for this face (e.g., "with glasses", "normal")
         #[arg(short, long)]
         label: Option<String>,
+
+        /// Label for this face, equivalent to --label
+        #[arg(value_name = "LABEL", conflicts_with = "label")]
+        positional_label: Option<String>,
     },
 
     /// Remove users, groups, or faces depending on selector scope
@@ -169,8 +173,10 @@ fn main() {
             view,
             group,
             label,
+            positional_label,
         } => {
             require_root_if_other_user(&user, is_root, "add faces for other users");
+            let label = label.or(positional_label);
             commands::add::run(&config_path, user, group, label, debug, view)
         }
         Commands::Remove { user, group, face } => {

@@ -125,7 +125,8 @@ auth sufficient pam_facepass.so
 
 ```bash
 # 添加人脸
-sudo facepass add [--user <用户名>] [--group <组名或序号>] [--label <标签>]
+sudo facepass add [--user <用户名>] [--group <组名或序号>] [--label <标签>] [标签]
+sudo facepass add normal
 
 # 列出用户/人脸组/人脸
 sudo facepass list [--user <用户名>] [--group <组名或序号>] [--depth <1|2|3>]
