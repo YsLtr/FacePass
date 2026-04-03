@@ -64,9 +64,14 @@ pub struct MatchResult {
     pub face_data: FaceData,
     /// Index in the original list
     pub index: usize,
+    /// Whether the similarity passed the requested threshold
+    pub passed_threshold: bool,
 }
 
-/// Find the best matching face from a list of candidates
+/// Find the most similar face from a list of candidates.
+///
+/// Returns `None` only when `candidates` is empty. Otherwise the best candidate is
+/// always returned and `passed_threshold` indicates whether it qualifies as a match.
 pub fn find_best_match(
     query_feature: &[f32],
     candidates: &[FaceData],
@@ -77,19 +82,22 @@ pub fn find_best_match(
     }
 
     let mut best_match: Option<MatchResult> = None;
-    let mut best_similarity = 0.0f64;
 
     for (index, face_data) in candidates.iter().enumerate() {
         let similarity = cosine_similarity(query_feature, &face_data.feature)?;
+        let passed_threshold = similarity >= threshold;
 
-        if similarity > best_similarity && similarity >= threshold {
-            best_similarity = similarity;
-            best_match = Some(MatchResult {
-                similarity,
-                face_data: face_data.clone(),
-                index,
-            });
-        }
+        match &best_match {
+            Some(current_best) if current_best.similarity >= similarity => {}
+            _ => {
+                best_match = Some(MatchResult {
+                    similarity,
+                    face_data: face_data.clone(),
+                    index,
+                    passed_threshold,
+                });
+            }
+        };
     }
 
     Ok(best_match)
@@ -122,6 +130,7 @@ pub fn find_all_matches(
                 similarity,
                 face_data: face_data.clone(),
                 index,
+                passed_threshold: true,
             });
         }
     }
@@ -182,6 +191,7 @@ mod tests {
         let matched = result.unwrap();
         assert_eq!(matched.face_data.label, "face2");
         assert_eq!(matched.index, 1);
+        assert!(matched.passed_threshold);
     }
 
     #[test]
@@ -190,6 +200,17 @@ mod tests {
         let candidates = vec![FaceData::new("face1", vec![-1.0; 128])];
 
         let result = find_best_match(&query, &candidates, 0.9).unwrap();
+        assert!(result.is_some());
+        let matched = result.unwrap();
+        assert_eq!(matched.face_data.label, "face1");
+        assert!(!matched.passed_threshold);
+    }
+
+    #[test]
+    fn test_find_best_match_empty_candidates() {
+        let query: Vec<f32> = vec![1.0; 128];
+
+        let result = find_best_match(&query, &[], 0.9).unwrap();
         assert!(result.is_none());
     }
 }

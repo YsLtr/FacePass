@@ -7,7 +7,7 @@ use facepass_core::{
     camera::Camera,
     config::Config,
     detection::FaceDetector,
-    face_validation::select_primary_face,
+    face_validation::{face_row_to_bbox, select_primary_face},
     matching::find_best_match,
     recognition::{mat_to_vec, FaceRecognizer},
     storage::FaceStorage,
@@ -21,6 +21,14 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 const MAX_ANTI_SPOOF_ERRORS: u32 = 3;
+const MATCH_BAR_WIDTH: i32 = 14;
+const MATCH_BAR_GAP: i32 = 10;
+const MATCH_BAR_MIN_HEIGHT: i32 = 60;
+const MATCH_BAR_MAX_HEIGHT: i32 = 120;
+const MATCH_BAR_INSET: i32 = 2;
+const MATCH_LABEL_GAP: i32 = 8;
+const MATCH_LABEL_MAX_CHARS: usize = 18;
+const MATCH_LABEL_FONT_SCALE: f64 = 0.5;
 
 #[derive(Default)]
 struct TestStats {
@@ -459,45 +467,62 @@ pub fn run(
             // Match against registered faces
             let mut match_label: Option<String> = None;
             let mut match_score: Option<f64> = None;
-            if liveness_allowed {
+            if liveness_status != "invalid" {
                 let aligned = recognizer.align_crop(&frame, &face_row)?;
                 let feature_mat = recognizer.extract_feature(&aligned)?;
                 let feature = mat_to_vec(&feature_mat)?;
 
                 match find_best_match(&feature, &face_data, threshold) {
                     Ok(Some(m)) => {
-                        stats.matched_frames += 1;
-                        consecutive_matches += 1;
-                        stats.max_consecutive_matches =
-                            stats.max_consecutive_matches.max(consecutive_matches);
                         match_label = Some(m.face_data.label.clone());
                         match_score = Some(m.similarity);
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "Match #{}: {} sim:{:.2}% det:{:.1}% live:{} {}",
-                                stats.matched_frames,
-                                m.face_data.label,
-                                m.similarity * 100.0,
-                                confidence * 100.0,
-                                format_liveness_text(liveness_status, liveness_score),
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
+                        if liveness_allowed && m.passed_threshold {
+                            stats.matched_frames += 1;
+                            consecutive_matches += 1;
+                            stats.max_consecutive_matches =
+                                stats.max_consecutive_matches.max(consecutive_matches);
+                            print_status_line(
+                                &mut last_status_width,
+                                &format!(
+                                    "Match #{}: {} sim:{:.2}% det:{:.1}% live:{} {}",
+                                    stats.matched_frames,
+                                    m.face_data.label,
+                                    m.similarity * 100.0,
+                                    confidence * 100.0,
+                                    format_liveness_text(liveness_status, liveness_score),
+                                    format_frame_progress(frame_idx, frames)
+                                ),
+                            )?;
+                        } else if liveness_allowed {
+                            stats.unmatched_frames += 1;
+                            consecutive_matches = 0;
+                            print_status_line(
+                                &mut last_status_width,
+                                &format!(
+                                    "No match (< {:.0}%) det:{:.1}% live:{} {}",
+                                    threshold * 100.0,
+                                    confidence * 100.0,
+                                    format_liveness_text(liveness_status, liveness_score),
+                                    format_frame_progress(frame_idx, frames)
+                                ),
+                            )?;
+                        }
                     }
                     Ok(None) => {
-                        stats.unmatched_frames += 1;
-                        consecutive_matches = 0;
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "No match (< {:.0}%) det:{:.1}% live:{} {}",
-                                threshold * 100.0,
-                                confidence * 100.0,
-                                format_liveness_text(liveness_status, liveness_score),
-                                format_frame_progress(frame_idx, frames)
-                            ),
-                        )?;
+                        if liveness_allowed {
+                            stats.unmatched_frames += 1;
+                            consecutive_matches = 0;
+                            print_status_line(
+                                &mut last_status_width,
+                                &format!(
+                                    "No match (< {:.0}%) det:{:.1}% live:{} {}",
+                                    threshold * 100.0,
+                                    confidence * 100.0,
+                                    format_liveness_text(liveness_status, liveness_score),
+                                    format_frame_progress(frame_idx, frames)
+                                ),
+                            )?;
+                        }
                     }
                     Err(e) => {
                         consecutive_matches = 0;
@@ -544,23 +569,13 @@ pub fn run(
                     _ => Scalar::new(200.0, 200.0, 200.0, 0.0),
                 };
                 draw_text(&mut display, 1, &live_text, live_color)?;
+                if let (Some(label), Some(score)) = (match_label.as_deref(), match_score) {
+                    draw_match_indicator(&mut display, &face_row, label, score, threshold)?;
+                }
 
-                let match_text = match (match_label, match_score) {
-                    (Some(label), Some(score)) => {
-                        format!("Match: {} ({:.2}%)", label, score * 100.0)
-                    }
-                    _ => format!("Match: none (threshold {:.0}%)", threshold * 100.0),
-                };
                 draw_text(
                     &mut display,
                     2,
-                    &match_text,
-                    Scalar::new(255.0, 255.0, 255.0, 0.0),
-                )?;
-
-                draw_text(
-                    &mut display,
-                    3,
                     &format!(
                         "Valid: {}  Match: {}  Streak: {}  Spoof: {}",
                         stats.valid_frames,
@@ -572,7 +587,7 @@ pub fn run(
                 )?;
                 draw_text(
                     &mut display,
-                    4,
+                    3,
                     &format!(
                         "Total: {}  Invalid: {}  NoFace: {}  Err: {}",
                         stats.total_frames,
@@ -910,6 +925,16 @@ fn liveness_box_color(status: &str) -> Scalar {
     }
 }
 
+fn match_bar_color(similarity: f64, threshold: f64) -> Scalar {
+    if similarity >= threshold {
+        Scalar::new(0.0, 255.0, 0.0, 0.0)
+    } else if similarity >= 0.5 {
+        Scalar::new(0.0, 255.0, 255.0, 0.0)
+    } else {
+        Scalar::new(0.0, 0.0, 255.0, 0.0)
+    }
+}
+
 fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()> {
     let origin = Point::new(10, 25 + line * 20);
     imgproc::put_text(
@@ -924,6 +949,138 @@ fn draw_text(image: &mut Mat, line: i32, text: &str, color: Scalar) -> Result<()
         false,
     )?;
     Ok(())
+}
+
+fn draw_text_at(
+    image: &mut Mat,
+    origin: Point,
+    text: &str,
+    scale: f64,
+    color: Scalar,
+) -> Result<()> {
+    imgproc::put_text(
+        image,
+        text,
+        origin,
+        imgproc::FONT_HERSHEY_SIMPLEX,
+        scale,
+        color,
+        1,
+        imgproc::LINE_AA,
+        false,
+    )?;
+    Ok(())
+}
+
+fn draw_match_indicator(
+    image: &mut Mat,
+    face_row: &Mat,
+    label: &str,
+    similarity: f64,
+    threshold: f64,
+) -> Result<()> {
+    let frame_size = image.size()?;
+    let frame_w = frame_size.width.max(1);
+    let frame_h = frame_size.height.max(1);
+    let [x, y, w, h] = face_row_to_bbox(face_row)?;
+    let face_rect = Rect::new(
+        x.max(0.0).round() as i32,
+        y.max(0.0).round() as i32,
+        w.max(1.0).round() as i32,
+        h.max(1.0).round() as i32,
+    );
+
+    let label = truncate_label(label, MATCH_LABEL_MAX_CHARS);
+    let mut baseline = 0;
+    let label_size = imgproc::get_text_size(
+        &label,
+        imgproc::FONT_HERSHEY_SIMPLEX,
+        MATCH_LABEL_FONT_SCALE,
+        1,
+        &mut baseline,
+    )?;
+    let label_padding = label_size.height + baseline + MATCH_LABEL_GAP + 4;
+    let available_bottom = (frame_h - label_padding).max(20);
+    let preferred_bottom = (face_rect.y + face_rect.height).clamp(8, available_bottom);
+    let bar_height = face_rect
+        .height
+        .clamp(MATCH_BAR_MIN_HEIGHT, MATCH_BAR_MAX_HEIGHT)
+        .min((preferred_bottom - 4).max(20));
+    let bar_y = (preferred_bottom - bar_height).max(4);
+    let right_x = face_rect.x + face_rect.width + MATCH_BAR_GAP;
+    let left_x = face_rect.x - MATCH_BAR_GAP - MATCH_BAR_WIDTH;
+    let bar_x = if right_x + MATCH_BAR_WIDTH <= frame_w - 4 {
+        right_x
+    } else {
+        left_x.max(4)
+    }
+    .clamp(0, (frame_w - MATCH_BAR_WIDTH).max(0));
+
+    let bar_rect = Rect::new(bar_x, bar_y, MATCH_BAR_WIDTH, bar_height.max(1));
+    imgproc::rectangle(
+        image,
+        bar_rect,
+        Scalar::new(32.0, 32.0, 32.0, 0.0),
+        -1,
+        imgproc::LINE_8,
+        0,
+    )?;
+    imgproc::rectangle(
+        image,
+        bar_rect,
+        Scalar::new(220.0, 220.0, 220.0, 0.0),
+        1,
+        imgproc::LINE_8,
+        0,
+    )?;
+
+    let inner_width = (bar_rect.width - MATCH_BAR_INSET * 2).max(1);
+    let inner_height = (bar_rect.height - MATCH_BAR_INSET * 2).max(1);
+    let fill_height =
+        ((inner_height as f64 * similarity.clamp(0.0, 1.0)).round() as i32).clamp(0, inner_height);
+    if fill_height > 0 {
+        let fill_rect = Rect::new(
+            bar_rect.x + MATCH_BAR_INSET,
+            bar_rect.y + bar_rect.height - MATCH_BAR_INSET - fill_height,
+            inner_width,
+            fill_height,
+        );
+        imgproc::rectangle(
+            image,
+            fill_rect,
+            match_bar_color(similarity, threshold),
+            -1,
+            imgproc::LINE_8,
+            0,
+        )?;
+    }
+
+    let label_x = (bar_rect.x + (bar_rect.width - label_size.width) / 2)
+        .clamp(0, (frame_w - label_size.width).max(0));
+    let label_y = (bar_rect.y + bar_rect.height + MATCH_LABEL_GAP + label_size.height).clamp(
+        label_size.height,
+        (frame_h - baseline - 2).max(label_size.height),
+    );
+    draw_text_at(
+        image,
+        Point::new(label_x, label_y),
+        &label,
+        MATCH_LABEL_FONT_SCALE,
+        Scalar::new(255.0, 255.0, 255.0, 0.0),
+    )?;
+
+    Ok(())
+}
+
+fn truncate_label(label: &str, max_chars: usize) -> String {
+    let char_count = label.chars().count();
+    if char_count <= max_chars {
+        return label.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let truncated: String = label.chars().take(keep).collect();
+    format!("{truncated}...")
 }
 
 fn should_end(key: i32) -> bool {

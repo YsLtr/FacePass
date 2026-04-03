@@ -256,7 +256,7 @@ fn authenticate_sync(
 
         // Match against stored faces
         match find_best_match(&feature, &face_data, threshold) {
-            Ok(Some(m)) => {
+            Ok(Some(m)) if m.passed_threshold => {
                 consecutive_matches += 1;
                 max_consecutive_matches = max_consecutive_matches.max(consecutive_matches);
                 debug!(
@@ -272,7 +272,7 @@ fn authenticate_sync(
                     best_match_info = Some((m.similarity, m.face_data.label.clone()));
                 }
             }
-            Ok(None) => {
+            Ok(Some(_)) | Ok(None) => {
                 consecutive_matches = 0;
             }
             Err(e) => {
