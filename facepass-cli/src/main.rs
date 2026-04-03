@@ -70,6 +70,10 @@ enum Commands {
         /// Face selector(s) within the target group (index or exact label)
         #[arg(short = 'f', long = "face")]
         face: Vec<String>,
+
+        /// Face selector(s), equivalent to --face
+        #[arg(value_name = "FACE")]
+        positional_face: Vec<String>,
     },
 
     /// List users, groups, or faces
@@ -108,6 +112,10 @@ enum Commands {
         /// Target group selector (index or exact name)
         #[arg(short = 'g', long)]
         group: Option<String>,
+
+        /// Target group selector, equivalent to --group
+        #[arg(value_name = "GROUP", conflicts_with = "group")]
+        positional_group: Option<String>,
 
         /// Face selector(s) within the target group (index or exact label)
         #[arg(short = 'f', long = "face")]
@@ -186,7 +194,13 @@ fn main() {
             let label = label.or(positional_label);
             commands::add::run(&config_path, user, group, label, debug, view)
         }
-        Commands::Remove { user, group, face } => {
+        Commands::Remove {
+            user,
+            group,
+            mut face,
+            positional_face,
+        } => {
+            face.extend(positional_face);
             commands::remove::run(&config_path, user, group, face)
         }
         Commands::List {
@@ -200,9 +214,13 @@ fn main() {
             debug,
             view,
             group,
+            positional_group,
             face,
             frames,
-        } => commands::test::run(&config_path, user, group, face, frames, debug, view),
+        } => {
+            let group = group.or(positional_group);
+            commands::test::run(&config_path, user, group, face, frames, debug, view)
+        }
         Commands::Config { show, set } => commands::config::run(&config_path, show, set),
         Commands::Cameras => commands::cameras::run(),
         Commands::Cancel => commands::cancel::run(&config_path),

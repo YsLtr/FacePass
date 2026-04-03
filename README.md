@@ -135,7 +135,9 @@ sudo facepass list [--user <用户 selector>] [--group <组 selector>] [--depth 
 sudo facepass list --all [--depth <1|2|3>]
 
 # 删除用户、组或人脸
-sudo facepass remove [--user <用户 selector>] [--group <组 selector>] [--face <face selector>]
+sudo facepass remove [--user <用户 selector>] [--group <组 selector>] [--face <face selector>] [FACE...]
+sudo facepass remove 0
+sudo facepass remove normal
 
 # 切换默认人脸组
 sudo facepass status --set-default-group <组 selector>
@@ -143,7 +145,9 @@ sudo facepass status --set-default-group --user <用户 selector> --group <组 s
 sudo facepass status --set-default-group <组 selector> --show
 
 # 测试识别
-sudo facepass test [--user <用户 selector>] [--group <组 selector>] [--face <face selector>] [--frames <帧数>]
+sudo facepass test [--user <用户 selector>] [--group <组 selector>] [--face <face selector>] [--frames <帧数>] [GROUP]
+sudo facepass test default
+sudo facepass test 0
 
 # 查看状态
 sudo facepass status
