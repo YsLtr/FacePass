@@ -12,27 +12,53 @@ pub mod status;
 pub mod test;
 
 use anyhow::{anyhow, Result};
-use facepass_core::{models::FaceGroupSummary, storage::FaceStorage};
-use std::env;
+use facepass_core::{models::FaceGroupSummary, security::get_current_user, storage::FaceStorage};
 use std::io;
 
-/// Get the target username (from argument or current user)
-pub fn get_username(user_arg: Option<String>) -> Result<String> {
-    if let Some(user) = user_arg {
-        return Ok(user);
+/// Get the current CLI target user based on invoker context.
+pub fn current_username() -> Result<String> {
+    get_current_user()
+        .ok_or_else(|| anyhow!("Could not determine username. Please specify with --user"))
+}
+
+fn is_legacy_prefixed_numeric_selector(selector: &str) -> bool {
+    selector
+        .strip_prefix('@')
+        .or_else(|| selector.strip_prefix('#'))
+        .map(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+/// Resolve a user selector (index or exact name), defaulting to the current user.
+pub fn resolve_username(storage: &FaceStorage, user_selector: Option<&str>) -> Result<String> {
+    match user_selector {
+        Some(selector)
+            if !selector.is_empty() && selector.chars().all(|ch| ch.is_ascii_digit()) =>
+        {
+            Ok(storage.resolve_user(selector)?)
+        }
+        Some(selector) if is_legacy_prefixed_numeric_selector(selector) => Err(anyhow!(
+            "Invalid user selector '{}'. Use bare numeric indexes like '{}'",
+            selector,
+            selector[1..].to_string()
+        )),
+        Some(selector) => Ok(selector.to_string()),
+        None => current_username(),
+    }
+}
+
+/// Require root privileges when operating on another user's data.
+pub fn ensure_user_access(target_user: &str, action: &str) -> Result<()> {
+    if unsafe { libc::geteuid() } == 0 {
+        return Ok(());
     }
 
-    if let Ok(user) = env::var("SUDO_USER") {
-        return Ok(user);
+    let current_user = current_username()?;
+    if target_user == current_user {
+        return Ok(());
     }
 
-    if let Ok(user) = env::var("DOAS_USER") {
-        return Ok(user);
-    }
-
-    env::var("USER")
-        .or_else(|_| env::var("LOGNAME"))
-        .map_err(|_| anyhow!("Could not determine username. Please specify with --user"))
+    Err(anyhow!("Root privileges required to {}", action))
 }
 
 /// Resolve the target group for read/delete operations.
@@ -57,8 +83,15 @@ pub fn resolve_group_for_add(
         return Ok(storage.ensure_default_group(username)?);
     };
 
-    if selector.parse::<usize>().is_ok() {
+    if !selector.is_empty() && selector.chars().all(|ch| ch.is_ascii_digit()) {
         return Ok(storage.resolve_group(username, selector)?);
+    }
+    if is_legacy_prefixed_numeric_selector(selector) {
+        return Err(anyhow!(
+            "Invalid group selector '{}'. Use bare numeric indexes like '{}'",
+            selector,
+            selector[1..].to_string()
+        ));
     }
 
     if let Some(group) = storage.find_group_by_name(username, selector)? {

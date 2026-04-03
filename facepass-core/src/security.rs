@@ -90,25 +90,20 @@ pub fn user_exists(username: &str) -> bool {
 
 /// Get the current username
 pub fn get_current_user() -> Option<String> {
-    // Try SUDO_USER first (for sudo sessions)
-    if let Ok(user) = env::var("SUDO_USER") {
-        return Some(user);
-    }
+    let pkexec_user = env::var("PKEXEC_UID")
+        .ok()
+        .and_then(|uid_str| uid_str.parse::<u32>().ok())
+        .and_then(uid_to_username);
+    let real_uid_user = uid_to_username(unsafe { libc::getuid() });
 
-    // Try DOAS_USER (for doas sessions)
-    if let Ok(user) = env::var("DOAS_USER") {
-        return Some(user);
-    }
-
-    // Try PKEXEC_UID (for polkit sessions)
-    if let Ok(uid_str) = env::var("PKEXEC_UID") {
-        if let Ok(uid) = uid_str.parse::<u32>() {
-            return uid_to_username(uid);
-        }
-    }
-
-    // Fall back to USER or LOGNAME
-    env::var("USER").or_else(|_| env::var("LOGNAME")).ok()
+    resolve_current_user_from_sources(
+        env::var("SUDO_USER").ok(),
+        env::var("DOAS_USER").ok(),
+        pkexec_user,
+        real_uid_user,
+        env::var("USER").ok(),
+        env::var("LOGNAME").ok(),
+    )
 }
 
 /// Convert UID to username
@@ -126,6 +121,23 @@ fn uid_to_username(uid: u32) -> Option<String> {
         }
     }
     None
+}
+
+fn resolve_current_user_from_sources(
+    sudo_user: Option<String>,
+    doas_user: Option<String>,
+    pkexec_user: Option<String>,
+    real_uid_user: Option<String>,
+    user_env: Option<String>,
+    logname_env: Option<String>,
+) -> Option<String> {
+    sudo_user
+        .filter(|user| !user.is_empty())
+        .or_else(|| doas_user.filter(|user| !user.is_empty()))
+        .or_else(|| pkexec_user.filter(|user| !user.is_empty()))
+        .or_else(|| real_uid_user.filter(|user| !user.is_empty()))
+        .or_else(|| user_env.filter(|user| !user.is_empty()))
+        .or_else(|| logname_env.filter(|user| !user.is_empty()))
 }
 
 /// Check if running as root
@@ -197,5 +209,33 @@ mod tests {
         let user = get_current_user();
         // Should return some user in normal circumstances
         assert!(user.is_some() || env::var("USER").is_err());
+    }
+
+    #[test]
+    fn test_resolve_current_user_prefers_invoker_sources() {
+        let user = resolve_current_user_from_sources(
+            Some("sudo-user".to_string()),
+            Some("doas-user".to_string()),
+            Some("pkexec-user".to_string()),
+            Some("real-user".to_string()),
+            Some("env-user".to_string()),
+            Some("logname-user".to_string()),
+        );
+
+        assert_eq!(user.as_deref(), Some("sudo-user"));
+    }
+
+    #[test]
+    fn test_resolve_current_user_falls_back_to_real_uid_before_env() {
+        let user = resolve_current_user_from_sources(
+            None,
+            None,
+            None,
+            Some("real-user".to_string()),
+            Some("env-user".to_string()),
+            Some("logname-user".to_string()),
+        );
+
+        assert_eq!(user.as_deref(), Some("real-user"));
     }
 }

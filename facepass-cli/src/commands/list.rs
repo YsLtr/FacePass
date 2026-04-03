@@ -1,24 +1,102 @@
 //! List users, face groups, and faces
 
-use super::{get_username, resolve_group_for_read};
-use anyhow::Result;
+use super::{ensure_user_access, resolve_group_for_read, resolve_username};
+use anyhow::{anyhow, Result};
 use facepass_core::{config::Config, storage::FaceStorage};
 
-pub fn run(config_path: &str, user: Option<String>, group: Option<String>, depth: u8) -> Result<()> {
-    let username = get_username(user)?;
+pub fn run(
+    config_path: &str,
+    user: Option<String>,
+    group: Option<String>,
+    all: bool,
+    depth: u8,
+) -> Result<()> {
     let config = Config::load_with_fallback(config_path)?;
     let storage = FaceStorage::new(&config.storage.data_dir)?;
-    let metadata = storage.get_metadata(&username)?;
+
+    if all {
+        return list_all_users(&storage, &config, user, group, depth);
+    }
+
+    let username = resolve_username(&storage, user.as_deref())?;
+    ensure_user_access(&username, "list data for other users")?;
+    print_user_tree(&storage, &config, &username, group.as_deref(), depth, None)
+}
+
+fn list_all_users(
+    storage: &FaceStorage,
+    config: &Config,
+    user: Option<String>,
+    group: Option<String>,
+    depth: u8,
+) -> Result<()> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(anyhow!(
+            "Root privileges required to list data for all users"
+        ));
+    }
+    if user.is_some() || group.is_some() {
+        return Err(anyhow!("--all cannot be combined with --user or --group"));
+    }
+
+    let users = storage.list_users()?;
+    if users.is_empty() {
+        println!("No registered users with face data");
+        return Ok(());
+    }
+
+    let mut total_faces = 0usize;
+    for username in &users {
+        total_faces += storage.total_face_count(username)?;
+    }
+
+    println!("Face data for all registered users:");
+    println!("  Users: {}", users.len());
+    println!("  Total faces: {}", total_faces);
+    println!(
+        "  Max faces per group: {}",
+        config.recognition.max_faces_per_group
+    );
+
+    for (user_index, username) in users.iter().enumerate() {
+        println!();
+        print_user_tree(storage, config, username, None, depth, Some(user_index))?;
+    }
+
+    Ok(())
+}
+
+fn print_user_tree(
+    storage: &FaceStorage,
+    config: &Config,
+    username: &str,
+    group_selector: Option<&str>,
+    depth: u8,
+    user_index: Option<usize>,
+) -> Result<()> {
+    let metadata = storage.get_metadata(username)?;
+
+    if let Some(index) = user_index {
+        println!("[{}] {}", index, username);
+    } else {
+        println!("Face data for '{}':", username);
+    }
 
     if metadata.groups.is_empty() {
-        println!("No face groups registered for user '{}'", username);
+        println!("  Groups: 0");
+        println!("  Total faces: 0");
+        println!("  Default group: (none)");
+        println!(
+            "  Max faces per group: {}",
+            config.recognition.max_faces_per_group
+        );
         return Ok(());
     }
 
     let default_group = metadata.default_group().cloned();
     let all_groups = metadata.groups.clone();
-    let groups_to_show = if let Some(group_selector) = group.as_deref() {
-        let selected = resolve_group_for_read(&storage, &username, Some(group_selector))?;
+    let groups_to_show = if let Some(selector) = group_selector {
+        let selected = resolve_group_for_read(storage, username, Some(selector))?;
         all_groups
             .iter()
             .cloned()
@@ -29,7 +107,6 @@ pub fn run(config_path: &str, user: Option<String>, group: Option<String>, depth
         all_groups.into_iter().enumerate().collect::<Vec<_>>()
     };
 
-    println!("Face data for '{}':", username);
     println!("  Groups: {}", metadata.groups.len());
     println!("  Total faces: {}", metadata.total_face_count());
     println!(
@@ -54,7 +131,7 @@ pub fn run(config_path: &str, user: Option<String>, group: Option<String>, depth
             .map(|default_group| default_group.id == group.id)
             .unwrap_or(false);
         println!(
-            "\n[{}] {}{} ({} face(s))",
+            "\n  [{}] {}{} ({} face(s))",
             group_index,
             group.name,
             if is_default { " [default]" } else { "" },
@@ -65,16 +142,16 @@ pub fn run(config_path: &str, user: Option<String>, group: Option<String>, depth
             continue;
         }
 
-        let faces = storage.load_faces_in_group(&username, &group.id)?;
+        let faces = storage.load_faces_in_group(username, &group.id)?;
         if faces.is_empty() {
-            println!("  (empty)");
+            println!("    (empty)");
             continue;
         }
 
-        println!("  {:>5}  {:36}  {:20}  {}", "Index", "ID", "Label", "Created");
+        println!("    {:>8}  {:36}  {:20}  Created", "Index", "ID", "Label");
         for (face_index, face) in faces.iter().enumerate() {
             println!(
-                "  {:>5}  {}  {:20}  {}",
+                "    {:>8}  {}  {:20}  {}",
                 face_index,
                 face.id,
                 face.label,

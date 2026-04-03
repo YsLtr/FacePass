@@ -1,24 +1,35 @@
 //! Remove user, group, or face data
 
-use super::{get_username, resolve_group_for_read};
-use anyhow::Result;
+use super::{ensure_user_access, resolve_group_for_read, resolve_username};
+use anyhow::{anyhow, Result};
 use facepass_core::{config::Config, storage::FaceStorage};
 
 pub fn run(
     config_path: &str,
     user: Option<String>,
     group: Option<String>,
-    mut face: Vec<String>,
+    face: Vec<String>,
 ) -> Result<()> {
     let user_scope_selected = user.is_some();
-    let username = get_username(user)?;
     let config = Config::load_with_fallback(config_path)?;
     let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let username = resolve_username(&storage, user.as_deref())?;
+    ensure_user_access(&username, "remove data for other users")?;
 
-    if user_scope_selected && group.is_none() && face.is_empty() && storage.user_dir(&username).exists() {
-        storage.delete_user(&username)?;
-        println!("✓ Removed all face data for user '{}'", username);
-        return Ok(());
+    if !user_scope_selected && group.is_none() && face.is_empty() {
+        return Err(anyhow!(
+            "Nothing to remove. Specify --face, --group, or --user."
+        ));
+    }
+
+    if user_scope_selected && group.is_none() && face.is_empty() {
+        if storage.user_dir(&username).exists() {
+            storage.delete_user(&username)?;
+            println!("✓ Removed all face data for user '{}'", username);
+            return Ok(());
+        }
+
+        return Err(anyhow!("No face data stored for user '{}'", username));
     }
 
     if let Some(group_selector) = group.as_deref() {
@@ -45,10 +56,6 @@ pub fn run(
     }
 
     let target_group = resolve_group_for_read(&storage, &username, group.as_deref())?;
-    if face.is_empty() {
-        face.push("0".to_string());
-    }
-
     let faces = storage.resolve_faces_in_group(&username, &target_group.id, &face)?;
     if faces.is_empty() {
         return Err(anyhow::anyhow!(
@@ -68,7 +75,9 @@ pub fn run(
 
     let ids: Vec<_> = faces.iter().map(|matched| matched.id).collect();
     let deleted = storage.delete_faces(&username, &target_group.id, &ids)?;
-    let remaining = storage.load_faces_in_group(&username, &target_group.id)?.len();
+    let remaining = storage
+        .load_faces_in_group(&username, &target_group.id)?
+        .len();
 
     println!("\n✓ Removed {} face(s)", deleted);
     println!("  User: {}", username);

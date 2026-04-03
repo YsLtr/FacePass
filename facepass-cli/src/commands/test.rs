@@ -1,6 +1,8 @@
 //! Test face recognition command
 
-use super::{get_username, resolve_group_for_read, CommandInput, CommandKey};
+use super::{
+    ensure_user_access, resolve_group_for_read, resolve_username, CommandInput, CommandKey,
+};
 use anyhow::Result;
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
@@ -9,6 +11,7 @@ use facepass_core::{
     detection::FaceDetector,
     face_validation::{face_row_to_bbox, select_primary_face},
     matching::find_best_match,
+    models::FaceRecord,
     recognition::{mat_to_vec, FaceRecognizer},
     storage::FaceStorage,
 };
@@ -17,6 +20,7 @@ use opencv::{
     highgui, imgproc,
     prelude::*,
 };
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
@@ -67,15 +71,17 @@ pub fn run(
     config_path: &str,
     user: Option<String>,
     group: Option<String>,
+    face: Vec<String>,
     frames_override: Option<u32>,
     debug: bool,
     view: bool,
 ) -> Result<()> {
     const WINDOW_NAME: &str = "FacePass Test";
 
-    let username = get_username(user)?;
     let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
     let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let username = resolve_username(&storage, user.as_deref())?;
+    ensure_user_access(&username, "test faces for other users")?;
     let group = resolve_group_for_read(&storage, &username, group.as_deref())?;
     let frames = frames_override.unwrap_or(config.video.max_frames);
     let config_source_display = config_source
@@ -88,20 +94,39 @@ pub fn run(
         println!("Testing face group: {} ({})", group.name, group.id);
     }
 
-    let face_data = storage.load_face_data_in_group(&username, &group.id)?;
+    let candidate_faces = if face.is_empty() {
+        storage.load_faces_in_group(&username, &group.id)?
+    } else {
+        storage.resolve_faces_in_group(&username, &group.id, &face)?
+    };
+    let face_data: Vec<_> = candidate_faces
+        .iter()
+        .map(|record| record.data.clone())
+        .collect();
 
     if face_data.is_empty() {
-        return Err(anyhow::anyhow!(
-            "No faces registered for user '{}' in group '{}'. Use 'facepass add' first.",
-            username,
-            group.name
-        ));
+        let message = if face.is_empty() {
+            format!(
+                "No faces registered for user '{}' in group '{}'. Use 'facepass add' first.",
+                username, group.name
+            )
+        } else {
+            format!(
+                "Face selectors resolved to no faces in group '{}' for user '{}'",
+                group.name, username
+            )
+        };
+        return Err(anyhow::anyhow!(message));
     }
 
     println!(
         "Loaded {} registered face(s) from group '{}'",
         face_data.len(),
         group.name
+    );
+    println!(
+        "Match candidates: {}",
+        summarize_face_candidates(&candidate_faces)
     );
     println!(
         "Config source: {}",
@@ -1081,6 +1106,24 @@ fn truncate_label(label: &str, max_chars: usize) -> String {
     let keep = max_chars.saturating_sub(3);
     let truncated: String = label.chars().take(keep).collect();
     format!("{truncated}...")
+}
+
+fn summarize_face_candidates(candidates: &[FaceRecord]) -> String {
+    let mut counts = BTreeMap::new();
+    for candidate in candidates {
+        *counts.entry(candidate.label.as_str()).or_insert(0usize) += 1;
+    }
+
+    let mut parts = Vec::new();
+    for (label, count) in counts {
+        if count == 1 {
+            parts.push(label.to_string());
+        } else {
+            parts.push(format!("{label} x{count}"));
+        }
+    }
+
+    parts.join(", ")
 }
 
 fn should_end(key: i32) -> bool {

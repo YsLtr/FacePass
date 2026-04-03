@@ -125,22 +125,25 @@ auth sufficient pam_facepass.so
 
 ```bash
 # 添加人脸
-sudo facepass add [--user <用户名>] [--group <组名或序号>] [--label <标签>] [标签]
+sudo facepass add [--user <用户 selector>] [--group <组 selector>] [--label <标签>] [标签]
 sudo facepass add normal
 
-# 列出用户/人脸组/人脸
-sudo facepass list [--user <用户名>] [--group <组名或序号>] [--depth <1|2|3>]
+# 列出当前用户的数据
+sudo facepass list [--user <用户 selector>] [--group <组 selector>] [--depth <1|2|3>]
+
+# 列出所有已保存人脸用户的数据（仅 root）
+sudo facepass list --all [--depth <1|2|3>]
 
 # 删除用户、组或人脸
-sudo facepass remove [--user <用户名>] [--group <组名或序号>] [--face <标签或序号>]
+sudo facepass remove [--user <用户 selector>] [--group <组 selector>] [--face <face selector>]
 
 # 切换默认人脸组
-sudo facepass status --set-default-group <组名或序号>
-sudo facepass status --set-default-group --user <用户名> --group <组名或序号>
-sudo facepass status --set-default-group <组名或序号> --show
+sudo facepass status --set-default-group <组 selector>
+sudo facepass status --set-default-group --user <用户 selector> --group <组 selector>
+sudo facepass status --set-default-group <组 selector> --show
 
 # 测试识别
-sudo facepass test [--user <用户名>] [--group <组名或序号>] [--frames <帧数>]
+sudo facepass test [--user <用户 selector>] [--group <组 selector>] [--face <face selector>] [--frames <帧数>]
 
 # 查看状态
 sudo facepass status
@@ -148,6 +151,20 @@ sudo facepass status
 # 列出摄像头
 sudo facepass cameras
 ```
+
+Selector 语法统一如下：
+
+- 裸数字：按当前列表顺序选择，索引从 `0` 开始
+- 其他值：按精确名称匹配
+- `group name` 和 `label` 只允许变量风格名称：`[A-Za-z_][A-Za-z0-9_]*`
+- `facepass add` 未指定 `--label` 时会自动使用 `face_N`，不会交互询问
+
+常用列表方式：
+
+- `facepass list --depth 1`：当前用户摘要
+- `facepass list --depth 2`：当前用户下的组列表
+- `facepass list --group <组 selector> --depth 3`：当前用户某组下的 face 列表
+- `facepass list --all --depth 1`：所有已保存人脸用户列表
 
 ## 配置
 

@@ -1,6 +1,6 @@
 //! Status check command
 
-use super::get_username;
+use super::{ensure_user_access, resolve_username};
 use anyhow::{anyhow, Result};
 use facepass_core::{
     camera::check_camera,
@@ -29,7 +29,8 @@ pub fn run(
     let storage = FaceStorage::new(&config.storage.data_dir)?;
 
     if let Some(inline_group) = set_default_group {
-        let username = get_username(user)?;
+        let username = resolve_username(&storage, user.as_deref())?;
+        ensure_user_access(&username, "change default groups for other users")?;
         let group_selector = resolve_default_group_selector(inline_group, group)?;
         let target_group = storage.resolve_group(&username, &group_selector)?;
         storage.set_default_group(&username, &target_group.id)?;

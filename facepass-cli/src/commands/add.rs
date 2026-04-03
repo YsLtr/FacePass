@@ -1,11 +1,18 @@
 //! Add face command
 
-use super::{get_username, resolve_group_for_add, CommandInput, CommandKey};
+use super::{
+    ensure_user_access, resolve_group_for_add, resolve_username, CommandInput, CommandKey,
+};
 use anyhow::{anyhow, Result};
 use facepass_core::{
-    anti_spoofing::AntiSpoofDetector, camera::Camera, config::Config, detection::FaceDetector,
-    face_validation::select_primary_face, models::FaceRecord, recognition::FaceRecognizer,
-    storage::FaceStorage,
+    anti_spoofing::AntiSpoofDetector,
+    camera::Camera,
+    config::Config,
+    detection::FaceDetector,
+    face_validation::select_primary_face,
+    models::FaceRecord,
+    recognition::FaceRecognizer,
+    storage::{validate_selector_name, FaceStorage},
 };
 use opencv::{
     core::{Point, Rect, Scalar},
@@ -29,9 +36,10 @@ pub fn run(
 ) -> Result<()> {
     const WINDOW_NAME: &str = "FacePass Add";
 
-    let username = get_username(user)?;
     let config = Config::load_with_fallback(config_path)?;
     let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let username = resolve_username(&storage, user.as_deref())?;
+    ensure_user_access(&username, "add faces for other users")?;
     let group = resolve_group_for_add(&storage, &username, group.as_deref())?;
     let current_count = group.face_count;
 
@@ -48,20 +56,19 @@ pub fn run(
         ));
     }
 
-    // Get label
-    let face_label = if let Some(l) = label {
-        l
-    } else {
-        print!("Enter a label for this face (e.g., 'normal', 'with glasses'): ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            format!("Face {}", current_count + 1)
-        } else {
-            trimmed.to_string()
+    let face_label = match label {
+        Some(label) => {
+            validate_selector_name(&label, "Face label")?;
+            if storage.face_label_exists(&username, &group.id, &label)? {
+                return Err(anyhow!(
+                    "Face label '{}' already exists in group '{}'",
+                    label,
+                    group.name
+                ));
+            }
+            label
         }
+        None => storage.next_available_face_label(&username, &group.id)?,
     };
 
     println!("Initializing camera...");

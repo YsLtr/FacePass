@@ -7,6 +7,63 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+const IDENTIFIER_RULE: &str = "[A-Za-z_][A-Za-z0-9_]*";
+
+fn is_ascii_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+pub fn validate_selector_name(name: &str, kind: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Storage(format!("{kind} cannot be empty")));
+    }
+
+    if !is_ascii_identifier(name) {
+        return Err(Error::Storage(format!(
+            "{kind} '{}' is invalid. Names must match {}",
+            name, IDENTIFIER_RULE
+        )));
+    }
+
+    Ok(())
+}
+
+fn parse_index_selector(selector: &str, scope: &str) -> Option<Result<usize>> {
+    if !selector.is_empty() && selector.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(
+            selector
+                .parse::<usize>()
+                .map_err(|_| Error::Storage(format!("Invalid {} '{}'", scope, selector))),
+        );
+    }
+
+    let index_str = selector
+        .strip_prefix('@')
+        .or_else(|| selector.strip_prefix('#'))?;
+    if !index_str.is_empty() && index_str.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(Err(Error::Storage(format!(
+            "Invalid {} '{}'. Use bare numeric indexes like '{}'",
+            scope, selector, index_str
+        ))));
+    }
+
+    None
+}
+
+fn default_group_name_for_user(username: &str) -> &str {
+    if is_ascii_identifier(username) {
+        username
+    } else {
+        "default"
+    }
+}
+
 /// Face data storage manager
 pub struct FaceStorage {
     base_dir: PathBuf,
@@ -34,7 +91,8 @@ impl FaceStorage {
     }
 
     fn face_path(&self, username: &str, group_id: &Uuid, id: &Uuid) -> PathBuf {
-        self.group_dir(username, group_id).join(format!("{}.face", id))
+        self.group_dir(username, group_id)
+            .join(format!("{}.face", id))
     }
 
     /// Get path to user metadata file
@@ -77,7 +135,10 @@ impl FaceStorage {
     pub fn get_group_metadata(&self, username: &str, group_id: &Uuid) -> Result<FaceGroupMetadata> {
         let path = self.group_metadata_path(username, group_id);
         if !path.exists() {
-            return Err(Error::Storage(format!("Face group not found: {}", group_id)));
+            return Err(Error::Storage(format!(
+                "Face group not found: {}",
+                group_id
+            )));
         }
 
         let content = fs::read_to_string(path)?;
@@ -95,18 +156,14 @@ impl FaceStorage {
     /// Create a new named group for a user
     pub fn create_group(&self, username: &str, name: &str) -> Result<FaceGroupSummary> {
         let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(Error::Storage("Group name cannot be empty".to_string()));
-        }
-        if trimmed.chars().all(|ch| ch.is_ascii_digit()) {
-            return Err(Error::Storage(
-                "Purely numeric group names are not allowed".to_string(),
-            ));
-        }
+        validate_selector_name(trimmed, "Group name")?;
 
         let mut metadata = self.get_metadata(username)?;
         if metadata.groups.iter().any(|group| group.name == trimmed) {
-            return Err(Error::Storage(format!("Group '{}' already exists", trimmed)));
+            return Err(Error::Storage(format!(
+                "Group '{}' already exists",
+                trimmed
+            )));
         }
 
         let group = FaceGroupMetadata::new(trimmed);
@@ -125,7 +182,7 @@ impl FaceStorage {
     pub fn ensure_default_group(&self, username: &str) -> Result<FaceGroupSummary> {
         let metadata = self.get_metadata(username)?;
         if metadata.groups.is_empty() {
-            return self.create_group(username, username);
+            return self.create_group(username, default_group_name_for_user(username));
         }
 
         if let Some(group) = metadata.default_group() {
@@ -148,9 +205,10 @@ impl FaceStorage {
     /// Get the user's current default group without creating one
     pub fn get_default_group(&self, username: &str) -> Result<FaceGroupSummary> {
         let metadata = self.get_metadata(username)?;
-        metadata.default_group().cloned().ok_or_else(|| {
-            Error::Storage(format!("User '{}' has no default face group", username))
-        })
+        metadata
+            .default_group()
+            .cloned()
+            .ok_or_else(|| Error::Storage(format!("User '{}' has no default face group", username)))
     }
 
     /// List all known groups for a user
@@ -158,18 +216,54 @@ impl FaceStorage {
         Ok(self.get_metadata(username)?.groups)
     }
 
+    /// Resolve a registered user selector (index or exact username)
+    pub fn resolve_user(&self, selector: &str) -> Result<String> {
+        let users = self.list_users()?;
+
+        if let Some(index) = parse_index_selector(selector, "user selector") {
+            let index = index?;
+            if users.is_empty() {
+                return Err(Error::Storage(
+                    "No registered users with saved face data".to_string(),
+                ));
+            }
+            return users.get(index).cloned().ok_or_else(|| {
+                Error::Storage(format!(
+                    "Invalid user selector '{}'. Valid range: 0-{}",
+                    selector,
+                    users.len().saturating_sub(1)
+                ))
+            });
+        }
+
+        users
+            .into_iter()
+            .find(|user| user == selector)
+            .ok_or_else(|| {
+                Error::Storage(format!(
+                    "User '{}' not found in registered face data",
+                    selector
+                ))
+            })
+    }
+
     /// Resolve a group selector (index or exact name) for a user
     pub fn resolve_group(&self, username: &str, selector: &str) -> Result<FaceGroupSummary> {
         let metadata = self.get_metadata(username)?;
         if metadata.groups.is_empty() {
-            return Err(Error::Storage(format!("User '{}' has no face groups", username)));
+            return Err(Error::Storage(format!(
+                "User '{}' has no face groups",
+                username
+            )));
         }
 
-        if let Ok(index) = selector.parse::<usize>() {
+        if let Some(index) = parse_index_selector(selector, "group selector") {
+            let index = index?;
             return metadata.groups.get(index).cloned().ok_or_else(|| {
                 Error::Storage(format!(
-                    "Invalid group index {}. Valid range: 0-{}",
-                    index,
+                    "Invalid group selector '{}' for user '{}'. Valid range: 0-{}",
+                    selector,
+                    username,
                     metadata.groups.len().saturating_sub(1)
                 ))
             });
@@ -184,7 +278,11 @@ impl FaceStorage {
     }
 
     /// Find a group by exact name
-    pub fn find_group_by_name(&self, username: &str, name: &str) -> Result<Option<FaceGroupSummary>> {
+    pub fn find_group_by_name(
+        &self,
+        username: &str,
+        name: &str,
+    ) -> Result<Option<FaceGroupSummary>> {
         Ok(self
             .get_metadata(username)?
             .groups
@@ -196,14 +294,48 @@ impl FaceStorage {
     pub fn set_default_group(&self, username: &str, group_id: &Uuid) -> Result<()> {
         let mut metadata = self.get_metadata(username)?;
         if !metadata.groups.iter().any(|group| group.id == *group_id) {
-            return Err(Error::Storage(format!("Face group not found: {}", group_id)));
+            return Err(Error::Storage(format!(
+                "Face group not found: {}",
+                group_id
+            )));
         }
         metadata.default_group_id = Some(*group_id);
         self.save_metadata(&metadata)
     }
 
+    pub fn face_label_exists(&self, username: &str, group_id: &Uuid, label: &str) -> Result<bool> {
+        Ok(self
+            .load_faces_in_group(username, group_id)?
+            .iter()
+            .any(|face| face.label == label))
+    }
+
+    pub fn next_available_face_label(&self, username: &str, group_id: &Uuid) -> Result<String> {
+        let faces = self.load_faces_in_group(username, group_id)?;
+        let labels: HashSet<_> = faces.into_iter().map(|face| face.label).collect();
+
+        let mut index = 1usize;
+        loop {
+            let candidate = format!("face_{}", index);
+            if !labels.contains(&candidate) {
+                return Ok(candidate);
+            }
+            index += 1;
+        }
+    }
+
     /// Save a face record into an existing group
     pub fn save_face(&self, record: &FaceRecord) -> Result<()> {
+        validate_selector_name(&record.label, "Face label")?;
+        if self.face_label_exists(&record.username, &record.group_id, &record.label)? {
+            return Err(Error::Storage(format!(
+                "Face label '{}' already exists in group '{}'",
+                record.label,
+                self.get_group_metadata(&record.username, &record.group_id)?
+                    .name
+            )));
+        }
+
         let mut group = self.get_group_metadata(&record.username, &record.group_id)?;
         let path = self.face_path(&record.username, &record.group_id, &record.id);
         let encoded = bincode::serialize(record)?;
@@ -260,7 +392,11 @@ impl FaceStorage {
     }
 
     /// Load face data (features only) for a specific group
-    pub fn load_face_data_in_group(&self, username: &str, group_id: &Uuid) -> Result<Vec<FaceData>> {
+    pub fn load_face_data_in_group(
+        &self,
+        username: &str,
+        group_id: &Uuid,
+    ) -> Result<Vec<FaceData>> {
         let records = self.load_faces_in_group(username, group_id)?;
         Ok(records.into_iter().map(|record| record.data).collect())
     }
@@ -271,23 +407,32 @@ impl FaceStorage {
         self.load_face_data_in_group(username, &group.id)
     }
 
-    /// Resolve one or more face selectors within a group
+    /// Resolve one or more face selectors (index or exact label) within a group
     pub fn resolve_faces_in_group(
         &self,
         username: &str,
         group_id: &Uuid,
         selectors: &[String],
     ) -> Result<Vec<FaceRecord>> {
+        let group = self.get_group_metadata(username, group_id)?;
         let faces = self.load_faces_in_group(username, group_id)?;
         let mut matched = Vec::new();
         let mut seen = HashSet::new();
 
         for selector in selectors {
-            if let Ok(index) = selector.parse::<usize>() {
+            if let Some(index) = parse_index_selector(selector, "face selector") {
+                let index = index?;
+                if faces.is_empty() {
+                    return Err(Error::Storage(format!(
+                        "Group '{}' has no faces",
+                        group.name
+                    )));
+                }
                 let face = faces.get(index).cloned().ok_or_else(|| {
                     Error::Storage(format!(
-                        "Invalid face index {}. Valid range: 0-{}",
-                        index,
+                        "Invalid face selector '{}' in group '{}'. Valid range: 0-{}",
+                        selector,
+                        group.name,
                         faces.len().saturating_sub(1)
                     ))
                 })?;
@@ -305,8 +450,8 @@ impl FaceStorage {
 
             if label_matches.is_empty() {
                 return Err(Error::Storage(format!(
-                    "No faces with label '{}' in selected group",
-                    selector
+                    "No faces with label '{}' in group '{}'",
+                    selector, group.name
                 )));
             }
 
@@ -321,7 +466,12 @@ impl FaceStorage {
     }
 
     /// Delete specific faces from a group
-    pub fn delete_faces(&self, username: &str, group_id: &Uuid, face_ids: &[Uuid]) -> Result<usize> {
+    pub fn delete_faces(
+        &self,
+        username: &str,
+        group_id: &Uuid,
+        face_ids: &[Uuid],
+    ) -> Result<usize> {
         let mut group = self.get_group_metadata(username, group_id)?;
         let to_delete: HashSet<_> = face_ids.iter().copied().collect();
         let mut deleted = 0usize;
@@ -353,7 +503,10 @@ impl FaceStorage {
 
         let mut metadata = self.get_metadata(username)?;
         if !metadata.remove_group(group_id) {
-            return Err(Error::Storage(format!("Face group not found: {}", group_id)));
+            return Err(Error::Storage(format!(
+                "Face group not found: {}",
+                group_id
+            )));
         }
 
         if metadata.groups.is_empty() {
@@ -443,13 +596,15 @@ mod tests {
         let storage = FaceStorage::new(dir.path()).unwrap();
 
         let group = storage.ensure_default_group("testuser").unwrap();
-        let record = FaceRecord::new("testuser", group.id, "Test Face", vec![0.1; 128]);
+        let record = FaceRecord::new("testuser", group.id, "test_face", vec![0.1; 128]);
         storage.save_face(&record).unwrap();
 
-        let loaded = storage.load_face("testuser", &group.id, &record.id).unwrap();
+        let loaded = storage
+            .load_face("testuser", &group.id, &record.id)
+            .unwrap();
         assert_eq!(loaded.username, "testuser");
         assert_eq!(loaded.group_id, group.id);
-        assert_eq!(loaded.label, "Test Face");
+        assert_eq!(loaded.label, "test_face");
         assert_eq!(loaded.data.feature.len(), 128);
     }
 
@@ -461,8 +616,190 @@ mod tests {
         let default_group = storage.ensure_default_group("testuser").unwrap();
         let work_group = storage.create_group("testuser", "work").unwrap();
 
-        assert_eq!(storage.resolve_group("testuser", "0").unwrap().id, default_group.id);
-        assert_eq!(storage.resolve_group("testuser", "work").unwrap().id, work_group.id);
+        assert_eq!(
+            storage.resolve_group("testuser", "0").unwrap().id,
+            default_group.id
+        );
+        assert_eq!(
+            storage.resolve_group("testuser", "work").unwrap().id,
+            work_group.id
+        );
+    }
+
+    #[test]
+    fn test_numeric_group_name_is_rejected() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        storage.ensure_default_group("testuser").unwrap();
+        let error = storage
+            .create_group("testuser", "123")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Group name '123' is invalid"));
+    }
+
+    #[test]
+    fn test_resolve_registered_user_by_index() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let alice_group = storage.ensure_default_group("alice").unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "alice",
+                alice_group.id,
+                "normal",
+                vec![0.1; 128],
+            ))
+            .unwrap();
+
+        let bob_group = storage.ensure_default_group("bob").unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "bob",
+                bob_group.id,
+                "normal",
+                vec![0.2; 128],
+            ))
+            .unwrap();
+
+        assert_eq!(storage.resolve_user("0").unwrap(), "alice");
+        assert_eq!(storage.resolve_user("1").unwrap(), "bob");
+    }
+
+    #[test]
+    fn test_resolve_faces_by_index() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let group = storage.ensure_default_group("testuser").unwrap();
+        let first = FaceRecord::new("testuser", group.id, "normal", vec![0.1; 128]);
+        let second = FaceRecord::new("testuser", group.id, "alt", vec![0.2; 128]);
+        let third = FaceRecord::new("testuser", group.id, "alt", vec![0.3; 128]);
+        storage.save_face(&first).unwrap();
+        storage.save_face(&second).unwrap();
+        let error = storage.save_face(&third).unwrap_err().to_string();
+        assert!(error.contains("Face label 'alt' already exists"));
+
+        let resolved = storage
+            .resolve_faces_in_group(
+                "testuser",
+                &group.id,
+                &["1".to_string(), "normal".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].id, second.id);
+        assert_eq!(resolved[1].id, first.id);
+    }
+
+    #[test]
+    fn test_validate_selector_name_rules() {
+        validate_selector_name("normal", "Face label").unwrap();
+        validate_selector_name("with_glasses", "Face label").unwrap();
+        validate_selector_name("_backup1", "Group name").unwrap();
+
+        for invalid in ["123", "@a", "#a", "with-glasses", "hello world", "中文"] {
+            let error = validate_selector_name(invalid, "Face label")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Names must match"));
+        }
+    }
+
+    #[test]
+    fn test_default_group_falls_back_when_username_is_not_identifier() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let group = storage.ensure_default_group("user-name").unwrap();
+        assert_eq!(group.name, "default");
+    }
+
+    #[test]
+    fn test_next_available_face_label_skips_existing_numbers() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let group = storage.ensure_default_group("testuser").unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "testuser",
+                group.id,
+                "face_1",
+                vec![0.1; 128],
+            ))
+            .unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "testuser",
+                group.id,
+                "face_3",
+                vec![0.2; 128],
+            ))
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .next_available_face_label("testuser", &group.id)
+                .unwrap(),
+            "face_2"
+        );
+    }
+
+    #[test]
+    fn test_same_label_is_allowed_in_different_groups() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let first_group = storage.ensure_default_group("testuser").unwrap();
+        let second_group = storage.create_group("testuser", "backup").unwrap();
+
+        storage
+            .save_face(&FaceRecord::new(
+                "testuser",
+                first_group.id,
+                "normal",
+                vec![0.1; 128],
+            ))
+            .unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "testuser",
+                second_group.id,
+                "normal",
+                vec![0.2; 128],
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_legacy_prefixed_index_selectors_are_rejected() {
+        let dir = tempdir().unwrap();
+        let storage = FaceStorage::new(dir.path()).unwrap();
+
+        let group = storage.ensure_default_group("testuser").unwrap();
+        storage
+            .save_face(&FaceRecord::new(
+                "testuser",
+                group.id,
+                "normal",
+                vec![0.1; 128],
+            ))
+            .unwrap();
+
+        assert!(storage
+            .resolve_group("testuser", "@0")
+            .unwrap_err()
+            .to_string()
+            .contains("Use bare numeric indexes"));
+        assert!(storage
+            .resolve_faces_in_group("testuser", &group.id, &["#0".to_string()])
+            .unwrap_err()
+            .to_string()
+            .contains("Use bare numeric indexes"));
     }
 
     #[test]
@@ -480,7 +817,13 @@ mod tests {
             .delete_faces("testuser", &group.id, &[first.id])
             .unwrap();
         assert_eq!(deleted, 1);
-        assert_eq!(storage.load_faces_in_group("testuser", &group.id).unwrap().len(), 1);
+        assert_eq!(
+            storage
+                .load_faces_in_group("testuser", &group.id)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(storage.list_groups("testuser").unwrap()[0].face_count, 1);
     }
 
@@ -491,7 +834,9 @@ mod tests {
 
         let default_group = storage.ensure_default_group("testuser").unwrap();
         let second_group = storage.create_group("testuser", "backup").unwrap();
-        storage.set_default_group("testuser", &second_group.id).unwrap();
+        storage
+            .set_default_group("testuser", &second_group.id)
+            .unwrap();
 
         storage.delete_group("testuser", &second_group.id).unwrap();
 
