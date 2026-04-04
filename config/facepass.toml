@@ -56,8 +56,8 @@ threshold = 0.9
 log_level = "debug"
 
 [presets.dev.models]
-anti_spoof_v1se_path = "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV1SE.onnx"
-anti_spoof_v2_path = "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx"
+anti_spoof_v1se_path = "/home/ysltr/builds/FacePass/facepass/models/MiniFASNetV1SE.onnx"
+anti_spoof_v2_path = "/home/ysltr/builds/FacePass/facepass/models/MiniFASNetV2.onnx"
 sface_path = "/home/ysltr/builds/FacePass/facepass/models/face_recognition_sface_2021dec.onnx"
 yunet_path = "/home/ysltr/builds/FacePass/facepass/models/face_detection_yunet_2023mar.onnx"
 
