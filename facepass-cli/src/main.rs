@@ -132,6 +132,18 @@ enum Commands {
         #[arg(short, long)]
         show: bool,
 
+        /// Show a specific preset without changing the active preset
+        #[arg(long, value_name = "PRESET")]
+        preset: Option<String>,
+
+        /// List available presets
+        #[arg(long)]
+        list_presets: bool,
+
+        /// Switch the active preset
+        #[arg(long, value_name = "PRESET")]
+        use_preset: Option<String>,
+
         /// Set a configuration value (e.g., video.timeout=10)
         #[arg(short = 'S', long)]
         set: Option<String>,
@@ -221,7 +233,13 @@ fn main() {
             let group = group.or(positional_group);
             commands::test::run(&config_path, user, group, face, frames, debug, view)
         }
-        Commands::Config { show, set } => commands::config::run(&config_path, show, set),
+        Commands::Config {
+            show,
+            preset,
+            list_presets,
+            use_preset,
+            set,
+        } => commands::config::run(&config_path, show, preset, list_presets, use_preset, set),
         Commands::Cameras => commands::cameras::run(),
         Commands::Cancel => commands::cancel::run(&config_path),
         Commands::Status {

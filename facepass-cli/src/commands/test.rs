@@ -78,7 +78,10 @@ pub fn run(
 ) -> Result<()> {
     const WINDOW_NAME: &str = "FacePass Test";
 
-    let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
+    let resolved = Config::load_with_fallback_and_source(config_path)?;
+    let config = resolved.config;
+    let config_source = resolved.source;
+    let active_preset = resolved.active_preset;
     let storage = FaceStorage::new(&config.storage.data_dir)?;
     let username = resolve_username(&storage, user.as_deref())?;
     ensure_user_access(&username, "test faces for other users")?;
@@ -132,6 +135,7 @@ pub fn run(
         "Config source: {}",
         colorize(&config_source_display, COLOR_CYAN)
     );
+    println!("Active preset: {}", colorize(&active_preset, COLOR_CYAN));
     println!("Initializing camera...\n");
 
     // Initialize components

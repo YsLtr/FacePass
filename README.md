@@ -177,19 +177,26 @@ Selector 语法统一如下：
 主要配置项：
 
 ```toml
-[video]
-device = "/dev/video0"      # 摄像头设备
-timeout = 5                  # 认证超时（秒）
+active_preset = "default"
 
-[recognition]
-similarity_threshold = 0.4   # 相似度阈值（越高越严格）
-max_faces_per_group = 5      # 每个人脸组最大人脸数
-consecutive_match_frames = 1 # 需要连续匹配次数
+[base.video]
+device = "/dev/video0"          # 摄像头设备
+timeout = 5                     # 认证超时（秒）
 
-[security]
-ignore_ssh = true            # SSH 会话跳过
-ignore_closed_lid = true     # 合盖时跳过
+[base.recognition]
+similarity_threshold = 0.4      # 相似度阈值（越高越严格）
+max_faces_per_group = 5         # 每个人脸组最大人脸数
+consecutive_match_frames = 1    # 需要连续匹配次数
+
+[presets.dev.daemon]
+log_level = "debug"
 ```
+
+常用命令：
+
+- `facepass config --list-presets`：列出可用 preset
+- `facepass config --show`：查看当前生效配置
+- `facepass config --use-preset dev`：切换到 `dev` preset
 
 ## API 接口
 
@@ -390,8 +397,11 @@ facepass/
 使用开发配置：
 
 ```bash
-# 复制开发配置
-cp config/facepass-dev.toml ~/.config/facepass/config.toml
+# 复制主配置
+cp config/facepass.toml ~/.config/facepass/config.toml
+
+# 切换到 dev preset
+./target/release/facepass --config ~/.config/facepass/config.toml config --use-preset dev
 
 # 运行 CLI
 ./target/release/facepass --config ~/.config/facepass/config.toml add

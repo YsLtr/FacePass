@@ -1,6 +1,7 @@
 //! Authentication logic
 
 use crate::control::{AuthControl, AuthSession};
+use crate::runtime::{snapshot, SharedRuntimeConfig};
 use facepass_core::{
     anti_spoofing::AntiSpoofDetector,
     camera::Camera,
@@ -22,12 +23,12 @@ const MANUAL_INTERRUPT_MESSAGE: &str = "用户手动打断";
 
 /// Perform face authentication
 pub async fn authenticate(
-    config: &Arc<Config>,
+    runtime_state: &SharedRuntimeConfig,
     control: &Arc<AuthControl>,
     request: &AuthRequest,
 ) -> AuthResponse {
     // Run in blocking task since OpenCV operations are synchronous
-    let config = config.clone();
+    let config = snapshot(runtime_state).config;
     let control = control.clone();
     let username = request.username.clone();
     let timeout = request.timeout;

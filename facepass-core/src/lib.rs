@@ -15,13 +15,13 @@ pub mod recognition;
 pub mod security;
 pub mod storage;
 
-pub use config::Config;
+pub use config::{Config, ConfigFile, DaemonRuntimeState, ResolvedConfig};
 pub use error::{Error, Result};
 pub use models::{FaceData, FaceRecord};
 
 /// Re-export commonly used types
 pub mod prelude {
-    pub use crate::config::Config;
+    pub use crate::config::{Config, ConfigFile, DaemonRuntimeState, ResolvedConfig};
     pub use crate::error::{Error, Result};
     pub use crate::models::{FaceData, FaceRecord};
 }

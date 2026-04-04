@@ -64,7 +64,7 @@ package() {
 
     # Install configs
     install -Dm644 "config/facepass.toml" "$pkgdir/etc/facepass/config.toml"
-    install -Dm644 "config/facepass-user.toml" "$pkgdir/usr/share/facepass/config.toml.example"
+    install -Dm644 "config/facepass.toml" "$pkgdir/usr/share/facepass/config.toml.example"
 
     # Install systemd service
     install -Dm644 "config/facepass.service" "$pkgdir/usr/lib/systemd/system/facepass.service"

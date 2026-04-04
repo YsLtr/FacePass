@@ -2,13 +2,23 @@
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+use toml::{map::Map, Value};
 
 /// Default configuration file path (system)
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/facepass/config.toml";
 
 /// User configuration file path
 pub const USER_CONFIG_PATH: &str = ".config/facepass/config.toml";
+
+/// Default runtime state file path written by the daemon
+pub const DEFAULT_RUNTIME_STATE_PATH: &str = "/run/facepass/runtime-state.json";
+
+/// Built-in preset name used when no preset is explicitly selected
+pub const DEFAULT_PRESET_NAME: &str = "default";
 
 /// Default data directory
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/facepass/faces";
@@ -18,6 +28,339 @@ pub const DEFAULT_MODELS_DIR: &str = "/usr/share/facepass/models";
 
 /// Default socket path
 pub const DEFAULT_SOCKET_PATH: &str = "/run/facepass/facepass.sock";
+
+/// Parsed on-disk configuration file containing a base config plus named preset overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigFile {
+    #[serde(default = "default_active_preset")]
+    pub active_preset: String,
+
+    #[serde(default)]
+    pub base: Config,
+
+    #[serde(default)]
+    pub presets: BTreeMap<String, Value>,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        let mut presets = BTreeMap::new();
+        presets.insert("dev".to_string(), default_dev_preset());
+
+        Self {
+            active_preset: DEFAULT_PRESET_NAME.to_string(),
+            base: Config::default(),
+            presets,
+        }
+    }
+}
+
+impl ConfigFile {
+    /// Load a configuration file without resolving a preset.
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            Error::Config(format!(
+                "Failed to read config file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        Ok(toml::from_str(&content)?)
+    }
+
+    /// Load a config file and return the resolved source path.
+    pub fn load_with_source<P: AsRef<Path>>(path: P) -> Result<(Self, Option<PathBuf>)> {
+        let path = path.as_ref();
+        Ok((Self::load(path)?, Some(path.to_path_buf())))
+    }
+
+    /// Load a config file from the preferred path, then fallback locations.
+    pub fn load_with_fallback_and_source<P: AsRef<Path>>(
+        preferred_path: P,
+    ) -> Result<(Self, Option<PathBuf>)> {
+        let preferred = preferred_path.as_ref();
+        if preferred.exists() {
+            return Self::load_with_source(preferred);
+        }
+
+        Self::load_or_default_with_source()
+    }
+
+    /// Load a config file from default search locations, or return the built-in default config file.
+    pub fn load_or_default_with_source() -> Result<(Self, Option<PathBuf>)> {
+        for candidate in Config::workspace_config_candidates() {
+            if candidate.exists() {
+                return Self::load_with_source(&candidate);
+            }
+        }
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let user_config = PathBuf::from(home).join(USER_CONFIG_PATH);
+            if user_config.exists() {
+                return Self::load_with_source(&user_config);
+            }
+        }
+
+        if Path::new(DEFAULT_CONFIG_PATH).exists() {
+            return Self::load_with_source(DEFAULT_CONFIG_PATH);
+        }
+
+        Ok((Self::default(), None))
+    }
+
+    /// Save configuration file to disk.
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| Error::Config(format!("Failed to serialize config: {}", e)))?;
+
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// List available preset names.
+    pub fn list_presets(&self) -> Vec<String> {
+        let mut names = vec![DEFAULT_PRESET_NAME.to_string()];
+        names.extend(
+            self.presets
+                .keys()
+                .filter(|name| name.as_str() != DEFAULT_PRESET_NAME)
+                .cloned(),
+        );
+        names
+    }
+
+    /// Resolve the file's active preset into a final runtime config.
+    pub fn resolve_active_preset(&self) -> Result<Config> {
+        self.resolve_preset(self.active_preset_name()?.as_str())
+    }
+
+    /// Resolve an arbitrary preset name into a final runtime config.
+    pub fn resolve_preset(&self, preset_name: &str) -> Result<Config> {
+        let preset_name = normalize_preset_name(preset_name)?;
+        let mut merged =
+            Value::try_from(self.base.clone()).map_err(|e| Error::Config(e.to_string()))?;
+
+        if let Some(overlay) = self.preset_override(preset_name)? {
+            merge_toml_value(&mut merged, overlay);
+        }
+
+        let config: Config = merged
+            .try_into()
+            .map_err(|e| Error::Config(e.to_string()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Return the configured active preset, normalized and validated.
+    pub fn active_preset_name(&self) -> Result<String> {
+        Ok(normalize_preset_name(&self.active_preset)?.to_string())
+    }
+
+    /// Update the active preset.
+    pub fn set_active_preset(&mut self, preset_name: &str) -> Result<()> {
+        let preset_name = normalize_preset_name(preset_name)?;
+        self.preset_override(preset_name)?;
+        self.active_preset = preset_name.to_string();
+        Ok(())
+    }
+
+    fn preset_override(&self, preset_name: &str) -> Result<Option<&Value>> {
+        if preset_name == DEFAULT_PRESET_NAME {
+            return self
+                .presets
+                .get(preset_name)
+                .map(validate_preset_override)
+                .transpose();
+        }
+
+        let Some(value) = self.presets.get(preset_name) else {
+            return Err(Error::Config(format!(
+                "Unknown preset '{}'. Available presets: {}",
+                preset_name,
+                self.list_presets().join(", ")
+            )));
+        };
+
+        Ok(Some(validate_preset_override(value)?))
+    }
+}
+
+/// Fully resolved config plus the source file and active preset used to build it.
+#[derive(Debug, Clone)]
+pub struct ResolvedConfig {
+    pub config: Config,
+    pub source: Option<PathBuf>,
+    pub active_preset: String,
+}
+
+/// Runtime state published by the daemon for status reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonRuntimeState {
+    pub running_preset: String,
+    pub socket_path: String,
+    pub pid_file: String,
+}
+
+impl DaemonRuntimeState {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            Error::Config(format!(
+                "Failed to read runtime state file {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        Ok(serde_json::from_str(&content)?)
+    }
+
+    pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| Error::Config(format!("Failed to serialize runtime state: {}", e)))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+}
+
+fn default_active_preset() -> String {
+    DEFAULT_PRESET_NAME.to_string()
+}
+
+fn normalize_preset_name(value: &str) -> Result<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(Error::Config("Preset name cannot be empty".to_string()));
+    }
+
+    Ok(trimmed)
+}
+
+fn validate_preset_override(value: &Value) -> Result<&Value> {
+    if !matches!(value, Value::Table(_)) {
+        return Err(Error::Config(
+            "Preset override must be a TOML table".to_string(),
+        ));
+    }
+
+    Ok(value)
+}
+
+fn merge_toml_value(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (Value::Table(base_table), Value::Table(overlay_table)) => {
+            for (key, value) in overlay_table {
+                match base_table.get_mut(key) {
+                    Some(base_value) => merge_toml_value(base_value, value),
+                    None => {
+                        base_table.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (base_value, overlay_value) => *base_value = overlay_value.clone(),
+    }
+}
+
+fn default_dev_preset() -> Value {
+    let mut root = Map::new();
+
+    root.insert(
+        "video".to_string(),
+        Value::Table(Map::from_iter([
+            (
+                "device".to_string(),
+                Value::String("/dev/video2".to_string()),
+            ),
+            ("timeout".to_string(), Value::Integer(5)),
+            ("max_frames".to_string(), Value::Integer(50)),
+            ("frame_width".to_string(), Value::Integer(640)),
+            ("frame_height".to_string(), Value::Integer(480)),
+        ])),
+    );
+
+    root.insert(
+        "recognition".to_string(),
+        Value::Table(Map::from_iter([
+            ("similarity_threshold".to_string(), Value::Float(0.7)),
+            ("consecutive_match_frames".to_string(), Value::Integer(10)),
+            ("valid_frames".to_string(), Value::Integer(30)),
+            ("valid_crop_scale".to_string(), Value::Float(2.0)),
+        ])),
+    );
+
+    root.insert(
+        "daemon".to_string(),
+        Value::Table(Map::from_iter([(
+            "log_level".to_string(),
+            Value::String("debug".to_string()),
+        )])),
+    );
+
+    root.insert(
+        "models".to_string(),
+        Value::Table(Map::from_iter([
+            (
+                "yunet_path".to_string(),
+                Value::String(
+                    "/home/ysltr/builds/FacePass/facepass/models/face_detection_yunet_2023mar.onnx"
+                        .to_string(),
+                ),
+            ),
+            (
+                "sface_path".to_string(),
+                Value::String(
+                    "/home/ysltr/builds/FacePass/facepass/models/face_recognition_sface_2021dec.onnx"
+                        .to_string(),
+                ),
+            ),
+            (
+                "anti_spoof_v2_path".to_string(),
+                Value::String(
+                    "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx"
+                        .to_string(),
+                ),
+            ),
+            (
+                "anti_spoof_v1se_path".to_string(),
+                Value::String(
+                    "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV1SE.onnx"
+                        .to_string(),
+                ),
+            ),
+        ])),
+    );
+
+    root.insert(
+        "anti_spoof".to_string(),
+        Value::Table(Map::from_iter([(
+            "threshold".to_string(),
+            Value::Float(0.9),
+        )])),
+    );
+
+    root.insert(
+        "storage".to_string(),
+        Value::Table(Map::from_iter([(
+            "data_dir".to_string(),
+            Value::String("/home/ysltr/builds/FacePass/facepass/data/faces".to_string()),
+        )])),
+    );
+
+    Value::Table(root)
+}
 
 /// Video/camera configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,36 +778,34 @@ pub struct Config {
 impl Config {
     /// Load configuration from file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
-            Error::Config(format!(
-                "Failed to read config file {}: {}",
-                path.as_ref().display(),
-                e
-            ))
-        })?;
-
-        let config: Config = toml::from_str(&content)?;
-        config.validate()?;
-        Ok(config)
+        Ok(Self::load_with_source(path)?.config)
     }
 
-    /// Load configuration from file and return the resolved source path.
-    pub fn load_with_source<P: AsRef<Path>>(path: P) -> Result<(Self, Option<PathBuf>)> {
+    /// Load configuration from file and return the resolved source path and active preset.
+    pub fn load_with_source<P: AsRef<Path>>(path: P) -> Result<ResolvedConfig> {
         let path = path.as_ref();
-        Ok((Self::load(path)?, Some(path.to_path_buf())))
+        let (config_file, source) = ConfigFile::load_with_source(path)?;
+        let active_preset = config_file.active_preset_name()?;
+        let config = config_file.resolve_active_preset()?;
+
+        Ok(ResolvedConfig {
+            config,
+            source,
+            active_preset,
+        })
     }
 
     /// Load configuration from a preferred path, then current workspace, then
     /// user/system defaults.
     pub fn load_with_fallback<P: AsRef<Path>>(preferred_path: P) -> Result<Self> {
-        Ok(Self::load_with_fallback_and_source(preferred_path)?.0)
+        Ok(Self::load_with_fallback_and_source(preferred_path)?.config)
     }
 
     /// Load configuration from a preferred path, then current workspace, then
-    /// user/system defaults, and return the resolved source path if any.
+    /// user/system defaults, and return the resolved source path and active preset.
     pub fn load_with_fallback_and_source<P: AsRef<Path>>(
         preferred_path: P,
-    ) -> Result<(Self, Option<PathBuf>)> {
+    ) -> Result<ResolvedConfig> {
         let preferred = preferred_path.as_ref();
         if preferred.exists() {
             return Self::load_with_source(preferred);
@@ -476,18 +817,17 @@ impl Config {
     /// Load configuration from default search locations.
     ///
     /// Priority:
-    /// 1. current working directory or parent dirs: config/facepass-dev.toml
-    /// 2. current working directory or parent dirs: config/facepass.toml
-    /// 3. ~/.config/facepass/config.toml
-    /// 4. /etc/facepass/config.toml
-    /// 5. default
+    /// 1. current working directory or parent dirs: config/facepass.toml
+    /// 2. ~/.config/facepass/config.toml
+    /// 3. /etc/facepass/config.toml
+    /// 4. default
     pub fn load_or_default() -> Result<Self> {
-        Ok(Self::load_or_default_with_source()?.0)
+        Ok(Self::load_or_default_with_source()?.config)
     }
 
     /// Load configuration from default search locations and return the
-    /// resolved source path if any.
-    pub fn load_or_default_with_source() -> Result<(Self, Option<PathBuf>)> {
+    /// resolved source path and active preset if any.
+    pub fn load_or_default_with_source() -> Result<ResolvedConfig> {
         for candidate in Self::workspace_config_candidates() {
             if candidate.exists() {
                 return Self::load_with_source(&candidate);
@@ -510,7 +850,11 @@ impl Config {
         // Return default
         let config = Self::default();
         config.validate()?;
-        Ok((config, None))
+        Ok(ResolvedConfig {
+            config,
+            source: None,
+            active_preset: DEFAULT_PRESET_NAME.to_string(),
+        })
     }
 
     /// Get the user config path
@@ -520,16 +864,12 @@ impl Config {
 
     /// Save configuration to file
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Config(format!("Failed to serialize config: {}", e)))?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent)?;
+        ConfigFile {
+            active_preset: DEFAULT_PRESET_NAME.to_string(),
+            base: self.clone(),
+            presets: BTreeMap::new(),
         }
-
-        std::fs::write(path, content)?;
-        Ok(())
+        .save(path)
     }
 
     /// Get the user's face data directory
@@ -545,7 +885,6 @@ impl Config {
         };
 
         while let Some(dir) = cursor {
-            candidates.push(dir.join("config").join("facepass-dev.toml"));
             candidates.push(dir.join("config").join("facepass.toml"));
             cursor = dir.parent().map(Path::to_path_buf);
         }
@@ -658,6 +997,21 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn valid_base_config() -> Config {
+        let mut config = Config::default();
+        config.models.yunet_path = "/bin/sh".to_string();
+        config.models.sface_path = "/bin/sh".to_string();
+        config
+    }
+
+    fn config_file_with_base(base: Config) -> ConfigFile {
+        ConfigFile {
+            active_preset: DEFAULT_PRESET_NAME.to_string(),
+            base,
+            presets: BTreeMap::new(),
+        }
+    }
+
     fn missing_model_path(name: &str) -> String {
         PathBuf::from("/tmp")
             .join(format!("facepass-test-missing-{name}.onnx"))
@@ -682,24 +1036,17 @@ mod tests {
 
     #[test]
     fn test_validate_allows_missing_anti_spoof_model() {
-        let mut config = Config::default();
+        let mut config = valid_base_config();
         config.anti_spoof.enabled = true;
         config.models.anti_spoof_v2_path = missing_model_path("anti-spoof-v2");
         config.models.anti_spoof_v1se_path = missing_model_path("anti-spoof-v1se");
-
-        // Keep the always-required models present so this test only exercises
-        // the anti-spoof fallback policy.
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
 
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_validate_rejects_invalid_anti_spoof_threshold() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.anti_spoof.threshold = 1.5;
 
         let err = config.validate().unwrap_err();
@@ -711,9 +1058,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_invalid_anti_spoof_crop_scale() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.anti_spoof.v2_crop_scale = 0.0;
 
         let err = config.validate().unwrap_err();
@@ -725,9 +1070,7 @@ mod tests {
 
     #[test]
     fn test_validate_allows_unlimited_frame_and_valid_frame_settings() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.video.max_frames = 0;
         config.recognition.valid_frames = 0;
         config.recognition.consecutive_match_frames = 10;
@@ -737,9 +1080,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_max_frames_lower_than_valid_frames_when_limited() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.video.max_frames = 10;
         config.recognition.valid_frames = 20;
 
@@ -752,9 +1093,7 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_missing_stop_condition() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.video.max_frames = 0;
         config.video.timeout = 0;
         config.recognition.valid_frames = 0;
@@ -768,15 +1107,14 @@ mod tests {
 
     #[test]
     fn test_load_runs_validation() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
+        let mut config = valid_base_config();
         config.video.max_frames = 0;
         config.video.timeout = 0;
         config.recognition.valid_frames = 0;
 
+        let config_file = config_file_with_base(config);
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(tmp.path(), toml::to_string(&config_file).unwrap()).unwrap();
 
         let err = Config::load(tmp.path()).unwrap_err();
         assert!(matches!(err, Error::Config(_)));
@@ -785,14 +1123,66 @@ mod tests {
 
     #[test]
     fn test_load_with_source_reports_loaded_file() {
-        let mut config = Config::default();
-        config.models.yunet_path = "/bin/sh".to_string();
-        config.models.sface_path = "/bin/sh".to_string();
-
+        let config_file = config_file_with_base(valid_base_config());
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(tmp.path(), toml::to_string(&config).unwrap()).unwrap();
+        std::fs::write(tmp.path(), toml::to_string(&config_file).unwrap()).unwrap();
 
-        let (_, source) = Config::load_with_source(tmp.path()).unwrap();
-        assert_eq!(source.as_deref(), Some(tmp.path()));
+        let resolved = Config::load_with_source(tmp.path()).unwrap();
+        assert_eq!(resolved.source.as_deref(), Some(tmp.path()));
+        assert_eq!(resolved.active_preset, DEFAULT_PRESET_NAME);
+    }
+
+    #[test]
+    fn test_config_file_resolves_base_only_default_preset() {
+        let config_file = config_file_with_base(valid_base_config());
+        let resolved = config_file.resolve_active_preset().unwrap();
+
+        assert_eq!(resolved.video.timeout, 5);
+        assert_eq!(resolved.detection.score_threshold, 0.9);
+    }
+
+    #[test]
+    fn test_config_file_merges_named_preset() {
+        let mut config_file = config_file_with_base(valid_base_config());
+        config_file.active_preset = "strict".to_string();
+        config_file.presets.insert(
+            "strict".to_string(),
+            Value::Table(Map::from_iter([
+                (
+                    "recognition".to_string(),
+                    Value::Table(Map::from_iter([
+                        ("similarity_threshold".to_string(), Value::Float(0.48)),
+                        ("valid_frames".to_string(), Value::Integer(8)),
+                    ])),
+                ),
+                (
+                    "video".to_string(),
+                    Value::Table(Map::from_iter([("timeout".to_string(), Value::Integer(9))])),
+                ),
+            ])),
+        );
+
+        let resolved = config_file.resolve_active_preset().unwrap();
+        assert_eq!(resolved.video.timeout, 9);
+        assert_eq!(resolved.recognition.similarity_threshold, 0.48);
+        assert_eq!(resolved.recognition.valid_frames, 8);
+        assert_eq!(resolved.video.frame_width, 640);
+    }
+
+    #[test]
+    fn test_missing_named_preset_is_rejected() {
+        let mut config_file = config_file_with_base(valid_base_config());
+        config_file.active_preset = "missing".to_string();
+
+        let err = config_file.resolve_active_preset().unwrap_err();
+        assert!(err.to_string().contains("Unknown preset 'missing'"));
+    }
+
+    #[test]
+    fn test_workspace_config_candidates_do_not_include_facepass_dev() {
+        let candidates = Config::workspace_config_candidates();
+        assert!(!candidates
+            .iter()
+            .any(|path| path.ends_with(Path::new("config").join("facepass-dev.toml"))));
     }
 }

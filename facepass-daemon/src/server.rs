@@ -2,8 +2,8 @@
 
 use crate::auth;
 use crate::control::AuthControl;
+use crate::runtime::{snapshot, SharedRuntimeConfig};
 use anyhow::Result;
-use facepass_core::config::Config;
 use facepass_core::models::{AuthRequest, AuthResponse, CancelRequest};
 use log::{debug, error, info, warn};
 use std::sync::Arc;
@@ -13,17 +13,18 @@ use tokio::sync::broadcast;
 
 /// Run the Unix socket server
 pub async fn run(
-    config: Arc<Config>,
+    runtime_state: SharedRuntimeConfig,
     auth_control: Arc<AuthControl>,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<()> {
-    let socket_path = &config.daemon.socket_path;
+    let config_snapshot = snapshot(&runtime_state);
+    let socket_path = config_snapshot.config.daemon.socket_path;
 
     // Remove existing socket if it exists
-    let _ = std::fs::remove_file(socket_path);
+    let _ = std::fs::remove_file(&socket_path);
 
     // Bind to the socket
-    let listener = UnixListener::bind(socket_path)?;
+    let listener = UnixListener::bind(&socket_path)?;
     info!("Listening on {}", socket_path);
 
     // Set socket permissions (allow all users to connect)
@@ -31,7 +32,7 @@ pub async fn run(
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o666);
-        std::fs::set_permissions(socket_path, perms)?;
+        std::fs::set_permissions(&socket_path, perms)?;
     }
 
     loop {
@@ -40,10 +41,10 @@ pub async fn run(
             result = listener.accept() => {
                 match result {
                     Ok((stream, _addr)) => {
-                        let config = config.clone();
+                        let runtime_state = runtime_state.clone();
                         let auth_control = auth_control.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_client(stream, config, auth_control).await {
+                            if let Err(e) = handle_client(stream, runtime_state, auth_control).await {
                                 error!("Client handler error: {}", e);
                             }
                         });
@@ -62,7 +63,7 @@ pub async fn run(
     }
 
     // Cleanup socket
-    let _ = std::fs::remove_file(socket_path);
+    let _ = std::fs::remove_file(&socket_path);
 
     Ok(())
 }
@@ -70,7 +71,7 @@ pub async fn run(
 /// Handle a single client connection
 async fn handle_client(
     stream: UnixStream,
-    config: Arc<Config>,
+    runtime_state: SharedRuntimeConfig,
     auth_control: Arc<AuthControl>,
 ) -> Result<()> {
     debug!("New client connected");
@@ -113,7 +114,7 @@ async fn handle_client(
                     "Auth request: user={}, source={}, timeout={}",
                     request.username, request.source, request.timeout
                 );
-                auth::authenticate(&config, &auth_control, &request).await
+                auth::authenticate(&runtime_state, &auth_control, &request).await
             }
         }
         Ok(msg_type) if msg_type == "cancel" => {

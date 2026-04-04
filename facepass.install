@@ -7,20 +7,23 @@ post_install() {
      mkdir -p ~/.config/facepass
      cp /usr/share/facepass/config.toml.example ~/.config/facepass/config.toml
 
-  2. Edit config (set camera device, data path, etc.):
+  2. Optional: switch preset:
+     facepass config --use-preset dev
+
+  3. Edit config (set camera device, data path, etc.):
      nano ~/.config/facepass/config.toml
 
-  3. Start the daemon:
+  4. Start the daemon:
      sudo systemctl start facepass
      sudo systemctl enable facepass
 
-  4. Add your face:
+  5. Add your face:
      facepass add
 
-  5. Test recognition:
+  6. Test recognition:
      facepass test
 
-  6. Configure PAM (add to /etc/pam.d/sudo):
+  7. Configure PAM (add to /etc/pam.d/sudo):
      auth sufficient pam_facepass.so
 
   WARNING: Keep a root terminal open when editing PAM config!

@@ -1,110 +1,76 @@
-# FacePass Configuration File
-# Location: /etc/facepass/config.toml
+active_preset = "dev"
 
-[video]
-# Camera device path (use `ls /dev/video*` to find available devices)
+[base.video]
 device = "/dev/video0"
-
-# Authentication timeout in seconds (0 = unlimited)
 timeout = 5
-
-# Maximum frames to try before giving up (0 = unlimited)
 max_frames = 30
-
-# Frame width (0 = auto)
 frame_width = 640
-
-# Frame height (0 = auto)
 frame_height = 480
 
-[detection]
-# YuNet face detection confidence threshold (0.0 - 1.0)
+[base.detection]
 score_threshold = 0.9
-
-# Overlap threshold for removing duplicate face boxes (lower = stricter)
 nms_threshold = 0.3
-
-# Input size for YuNet model
 input_width = 320
 input_height = 320
 
-[recognition]
-# SFace cosine similarity threshold (higher = stricter)
-# Recommended: 0.363 (OpenCV default) to 0.5
+[base.recognition]
 similarity_threshold = 0.4
-
-# Maximum faces per group
 max_faces_per_group = 5
-
-# Number of consecutive matched frames required
 consecutive_match_frames = 1
-
-# Minimum number of valid recognition frames required per attempt (0 = disabled)
 valid_frames = 5
-
-# Whether to stop immediately once valid_frames has been reached
-# Ignored when valid_frames = 0
 stop_on_valid_frames = true
-
-# Only faces that are fully inside the frame and can fully cover the
-# configured valid square crop range will enter liveness + recognition.
-# The square crop area is face_area * valid_crop_scale^2.
 valid_crop_scale = 2.7
 
-[security]
-# Skip face recognition for SSH sessions
+[base.security]
 ignore_ssh = true
-
-# Skip face recognition when laptop lid is closed
 ignore_closed_lid = true
-
-# Show desktop notification during authentication
 show_notification = false
 
-[daemon]
-# Unix socket path for IPC
+[base.daemon]
 socket_path = "/run/facepass/facepass.sock"
-
-# Log level: trace, debug, info, warn, error
 log_level = "info"
-
-# PID file path
 pid_file = "/run/facepass/facepass.pid"
 
-[models]
-# Path to YuNet face detection model
+[base.models]
 yunet_path = "/usr/share/facepass/models/face_detection_yunet_2023mar.onnx"
-
-# Path to SFace face recognition model
 sface_path = "/usr/share/facepass/models/face_recognition_sface_2021dec.onnx"
-
-# Path to MiniFASNetV2 anti-spoofing model
 anti_spoof_v2_path = "/usr/share/facepass/models/MiniFASNetV2.onnx"
-
-# Path to MiniFASNetV1SE anti-spoofing model
 anti_spoof_v1se_path = "/usr/share/facepass/models/MiniFASNetV1SE.onnx"
 
-[anti_spoof]
-# Enable anti-spoofing (liveness detection)
+[base.anti_spoof]
 enabled = true
-
-# Liveness score threshold (0.0-1.0, higher = stricter)
 threshold = 0.5
-
-# Anti-spoof mode:
-#   "minifasnet_v2"   -> use only MiniFASNetV2
-#   "minifasnet_v1se" -> use only MiniFASNetV1SE
-#   "fusion"          -> use both and average probabilities
 mode = "fusion"
-
-# MiniFASNetV2 input size and crop scale, matching training distribution
 v2_input_size = 80
 v2_crop_scale = 2.7
-
-# MiniFASNetV1SE input size and crop scale, matching training distribution
 v1se_input_size = 80
 v1se_crop_scale = 4.0
 
-[storage]
-# Path to store face data
+[base.storage]
 data_dir = "/var/lib/facepass/faces"
+
+[presets.dev.anti_spoof]
+threshold = 0.9
+
+[presets.dev.daemon]
+log_level = "debug"
+
+[presets.dev.models]
+anti_spoof_v1se_path = "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV1SE.onnx"
+anti_spoof_v2_path = "/home/ysltr/builds/FacePass/face-anti-spoofing/weights/MiniFASNetV2.onnx"
+sface_path = "/home/ysltr/builds/FacePass/facepass/models/face_recognition_sface_2021dec.onnx"
+yunet_path = "/home/ysltr/builds/FacePass/facepass/models/face_detection_yunet_2023mar.onnx"
+
+[presets.dev.recognition]
+consecutive_match_frames = 10
+similarity_threshold = 0.7
+valid_crop_scale = 2.0
+valid_frames = 30
+
+[presets.dev.storage]
+data_dir = "/home/ysltr/builds/FacePass/facepass/data/faces"
+
+[presets.dev.video]
+device = "/dev/video2"
+max_frames = 50
+timeout = 5

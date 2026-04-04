@@ -4,7 +4,7 @@ use super::{ensure_user_access, resolve_username};
 use anyhow::{anyhow, Result};
 use facepass_core::{
     camera::check_camera,
-    config::Config,
+    config::{Config, DaemonRuntimeState, DEFAULT_RUNTIME_STATE_PATH},
     security::{is_lid_closed, is_ssh_session},
     storage::FaceStorage,
 };
@@ -25,7 +25,11 @@ pub fn run(
         ));
     }
 
-    let (config, config_source) = Config::load_with_fallback_and_source(config_path)?;
+    let resolved = Config::load_with_fallback_and_source(config_path)?;
+    let config = resolved.config;
+    let config_source = resolved.source;
+    let config_active_preset = resolved.active_preset;
+    let runtime_state = load_runtime_state();
     let storage = FaceStorage::new(&config.storage.data_dir)?;
 
     if let Some(inline_group) = set_default_group {
@@ -50,27 +54,39 @@ pub fn run(
         println!();
     }
 
-    print_status_report(&config, config_source.as_deref(), &storage)
+    print_status_report(
+        &config,
+        config_source.as_deref(),
+        &config_active_preset,
+        runtime_state.as_ref(),
+        &storage,
+    )
 }
 
 fn print_status_report(
     config: &Config,
     config_source: Option<&std::path::Path>,
+    config_active_preset: &str,
+    runtime_state: Option<&DaemonRuntimeState>,
     storage: &FaceStorage,
 ) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
 
+    let runtime_socket_path = runtime_state
+        .map(|state| state.socket_path.as_str())
+        .unwrap_or(&config.daemon.socket_path);
+
     print!("Daemon: ");
-    if is_daemon_running(&config.daemon.socket_path) {
+    if is_daemon_running(runtime_socket_path) {
         println!("OK Running");
     } else {
         println!("X Not running");
     }
 
     print!("Socket: ");
-    if Path::new(&config.daemon.socket_path).exists() {
-        println!("OK {}", config.daemon.socket_path);
+    if Path::new(runtime_socket_path).exists() {
+        println!("OK {}", runtime_socket_path);
     } else {
         println!("X Not found");
     }
@@ -198,6 +214,14 @@ fn print_status_report(
     }
 
     println!("\nConfiguration:");
+    println!(
+        "  Running preset: {}",
+        runtime_state
+            .filter(|state| is_daemon_running(&state.socket_path))
+            .map(|state| state.running_preset.as_str())
+            .unwrap_or("(daemon not running)")
+    );
+    println!("  Config active preset: {}", config_active_preset);
     print!("  Config file: ");
     if let Some(path) = config_source {
         println!("OK {}", path.display());
@@ -237,4 +261,8 @@ fn is_daemon_running(socket_path: &str) -> bool {
     }
 
     std::os::unix::net::UnixStream::connect(socket_path).is_ok()
+}
+
+fn load_runtime_state() -> Option<DaemonRuntimeState> {
+    DaemonRuntimeState::load(DEFAULT_RUNTIME_STATE_PATH).ok()
 }
