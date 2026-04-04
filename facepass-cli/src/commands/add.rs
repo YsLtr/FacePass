@@ -111,6 +111,7 @@ pub fn run(
     let mut attempt = 0;
     let mut best_confidence = 0.0f32;
     let mut best_embedding: Option<FaceEmbedding> = None;
+    let mut last_blocker: Option<String> = None;
     let mut capture_requested = false;
     let mut last_status_width = 0usize;
     let detector_threshold = config.models.active_detector_config().score_threshold;
@@ -169,6 +170,7 @@ pub fn run(
             let detections = match runtime.detect_faces(&frame) {
                 Ok(detections) if !detections.is_empty() => detections,
                 _ => {
+                    last_blocker = Some("no face detected".to_string());
                     print_status_line(
                         &mut last_status_width,
                         &format!("Searching for face... ({}/{})", attempt, max_attempts),
@@ -194,6 +196,7 @@ pub fn run(
             let detection = match runtime.select_primary_face(&frame, &detections) {
                 Ok(detection) => detection,
                 Err(facepass_core::Error::InvalidFace(reason)) => {
+                    last_blocker = Some(format!("invalid face: {}", reason));
                     print_status_line(
                         &mut last_status_width,
                         &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
@@ -233,6 +236,10 @@ pub fn run(
                     liveness_score = Some(score);
                     liveness_status = "spoof";
                     liveness_allowed = false;
+                    last_blocker = Some(format!(
+                        "anti-spoof score {:.3} below threshold {:.2}",
+                        score, config.anti_spoof.threshold
+                    ));
                     print_status_line(
                         &mut last_status_width,
                         &format!(
@@ -247,6 +254,7 @@ pub fn run(
                 Err(facepass_core::Error::InvalidFace(reason)) => {
                     liveness_status = "invalid";
                     liveness_allowed = false;
+                    last_blocker = Some(format!("invalid face: {}", reason));
                     print_status_line(
                         &mut last_status_width,
                         &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
@@ -284,10 +292,16 @@ pub fn run(
             }
 
             if liveness_allowed {
-                if let Ok(embedding) = runtime.extract_embedding(&frame, &detection) {
-                    if confidence > detector_threshold && confidence > best_confidence {
-                        best_confidence = confidence;
-                        best_embedding = Some(embedding);
+                match runtime.extract_embedding(&frame, &detection) {
+                    Ok(embedding) => {
+                        if confidence > detector_threshold && confidence > best_confidence {
+                            best_confidence = confidence;
+                            best_embedding = Some(embedding);
+                            last_blocker = None;
+                        }
+                    }
+                    Err(e) => {
+                        last_blocker = Some(format!("embedding extraction failed: {}", e));
                     }
                 }
             }
@@ -405,9 +419,13 @@ pub fn run(
             new_count, config.recognition.max_faces_per_group
         );
     } else {
-        return Err(anyhow!(
-            "Could not capture a good face image. Please try again with better lighting."
-        ));
+        let detail = last_blocker
+            .map(|reason| format!(" Last blocker: {}", reason))
+            .unwrap_or_default();
+        return Err(anyhow!(format!(
+            "Could not capture a good face image. Please try again with better lighting.{}",
+            detail
+        )));
     }
 
     Ok(())
