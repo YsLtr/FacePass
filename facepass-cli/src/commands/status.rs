@@ -50,33 +50,38 @@ fn print_status_report(
         println!("X Not found");
     }
 
-    println!("\nModels:");
+    println!("\nRecognition Backend:");
+    println!("  Active detector: {}", config.models.active_detector.as_str());
     println!(
-        "  YuNet: {} | input: {}x{} | score: {:.2} | nms: {:.2}",
-        if Path::new(&config.models.yunet_path).exists() {
-            "OK Found"
-        } else {
-            "X Missing"
-        },
-        config.detection.input_width,
-        config.detection.input_height,
-        config.detection.score_threshold,
-        config.detection.nms_threshold
+        "  Active detector path: {}",
+        config.models.active_detector_config().path
     );
-    println!("    {}", config.models.yunet_path);
+    println!("  Active recognizer: {}", config.models.active_recognizer.as_str());
+    println!(
+        "  Active recognizer path: {}",
+        config.models.active_recognizer_config().path
+    );
+    println!(
+        "  Active model ID: {} | embedding_dim: {}",
+        config.models.active_recognizer_config().model_id,
+        config.models.active_recognizer_config().embedding_dim
+    );
+    println!(
+        "  Recognizer preprocess: {} {}x{} {}",
+        config.models.active_recognizer_config().preprocess.input_layout.as_str(),
+        config.models.active_recognizer_config().preprocess.input_width,
+        config.models.active_recognizer_config().preprocess.input_height,
+        config.models.active_recognizer_config().preprocess.color_order.as_str()
+    );
 
-    println!(
-        "  SFace: {} | similarity: {:.2} | max/group: {} | consecutive: {}",
-        if Path::new(&config.models.sface_path).exists() {
-            "OK Found"
-        } else {
-            "X Missing"
-        },
-        config.recognition.similarity_threshold,
-        config.recognition.max_faces_per_group,
-        config.recognition.consecutive_match_frames
-    );
-    println!("    {}", config.models.sface_path);
+    println!("\nConfigured Detectors:");
+    print_detector_status("YuNet", &config.models.yunet);
+    print_detector_status("SCRFD", &config.models.scrfd);
+
+    println!("\nConfigured Recognizers:");
+    print_recognizer_status("SFace", &config.models.sface);
+    print_recognizer_status("MobileFaceNet", &config.models.mobilefacenet);
+    print_recognizer_status("GhostFaceNet", &config.models.ghostfacenet);
 
     print!("  Anti-spoofing: ");
     if config.anti_spoof.enabled {
@@ -92,29 +97,22 @@ fn print_status_report(
         "  Valid crop scale (recognition): {:.2}",
         config.recognition.valid_crop_scale
     );
-
     println!(
-        "  Anti-spoof V2: {} | input: {}x{} | scale: {:.1}",
+        "  Anti-spoof V2: {}",
         if Path::new(&config.models.anti_spoof_v2_path).exists() {
             "OK Found"
         } else {
             "X Missing"
-        },
-        config.anti_spoof.v2_input_size,
-        config.anti_spoof.v2_input_size,
-        config.anti_spoof.v2_crop_scale
+        }
     );
     println!("    {}", config.models.anti_spoof_v2_path);
     println!(
-        "  Anti-spoof V1SE: {} | input: {}x{} | scale: {:.1}",
+        "  Anti-spoof V1SE: {}",
         if Path::new(&config.models.anti_spoof_v1se_path).exists() {
             "OK Found"
         } else {
             "X Missing"
-        },
-        config.anti_spoof.v1se_input_size,
-        config.anti_spoof.v1se_input_size,
-        config.anti_spoof.v1se_crop_scale
+        }
     );
     println!("    {}", config.models.anti_spoof_v1se_path);
 
@@ -174,6 +172,42 @@ fn print_status_report(
     }
 
     Ok(())
+}
+
+fn print_detector_status(name: &str, detector: &facepass_core::config::DetectorModelConfig) {
+    println!(
+        "  {}: {} | input: {}x{} | score: {:.2} | nms: {:.2}",
+        name,
+        if Path::new(&detector.path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        detector.input_width,
+        detector.input_height,
+        detector.score_threshold,
+        detector.nms_threshold
+    );
+    println!("    {}", detector.path);
+}
+
+fn print_recognizer_status(name: &str, recognizer: &facepass_core::config::RecognizerModelConfig) {
+    println!(
+        "  {}: {} | model_id: {} | dim: {} | input: {}x{} {} {}",
+        name,
+        if Path::new(&recognizer.path).exists() {
+            "OK Found"
+        } else {
+            "X Missing"
+        },
+        recognizer.model_id,
+        recognizer.embedding_dim,
+        recognizer.preprocess.input_width,
+        recognizer.preprocess.input_height,
+        recognizer.preprocess.input_layout.as_str(),
+        recognizer.preprocess.color_order.as_str()
+    );
+    println!("    {}", recognizer.path);
 }
 
 fn is_daemon_running(socket_path: &str) -> bool {

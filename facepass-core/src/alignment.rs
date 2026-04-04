@@ -1,16 +1,22 @@
 //! Face alignment utilities
-//!
-//! Note: Most alignment is done by FaceRecognizerSF::align_crop(),
-//! but this module provides additional utilities for image processing.
 
 use crate::error::{Error, Result};
+use crate::models::{DetectionResult, FaceLandmarks};
 use opencv::{
-    core::{Mat, Point, Rect, Scalar, Size},
+    calib3d,
+    core::{Mat, Point, Point2f, Rect, Scalar, Size, Vector},
     imgproc,
     prelude::*,
 };
 
-/// Resize image while maintaining aspect ratio
+const ARC_FACE_TEMPLATE_112: [[f32; 2]; 5] = [
+    [46.2946, 51.6963],
+    [81.5318, 51.5014],
+    [64.0252, 71.7366],
+    [49.5493, 92.3655],
+    [78.7299, 92.2041],
+];
+
 pub fn resize_max_dimension(image: &Mat, max_dim: f32) -> Result<Mat> {
     let size = image.size()?;
     let scale = (max_dim / (size.width.max(size.height) as f32)).min(1.0);
@@ -30,14 +36,12 @@ pub fn resize_max_dimension(image: &Mat, max_dim: f32) -> Result<Mat> {
     Ok(resized)
 }
 
-/// Convert image to grayscale
 pub fn to_grayscale(image: &Mat) -> Result<Mat> {
     let mut gray = Mat::default();
     imgproc::cvt_color_def(image, &mut gray, imgproc::COLOR_BGR2GRAY)?;
     Ok(gray)
 }
 
-/// Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
 pub fn apply_clahe(gray_image: &Mat, clip_limit: f64, tile_size: i32) -> Result<Mat> {
     let mut clahe = imgproc::create_clahe(clip_limit, Size::new(tile_size, tile_size))?;
     let mut equalized = Mat::default();
@@ -45,13 +49,12 @@ pub fn apply_clahe(gray_image: &Mat, clip_limit: f64, tile_size: i32) -> Result<
     Ok(equalized)
 }
 
-/// Check if image is too dark (returns darkness percentage)
 pub fn check_darkness(gray_image: &Mat, threshold: f64) -> Result<f64> {
     let mut hist = Mat::default();
-    let channels = opencv::core::Vector::<i32>::from(vec![0i32]);
-    let hist_size = opencv::core::Vector::<i32>::from(vec![256i32]);
-    let ranges = opencv::core::Vector::<f32>::from(vec![0.0f32, 256.0f32]);
-    let images = opencv::core::Vector::<Mat>::from(vec![gray_image.clone()]);
+    let channels = Vector::<i32>::from(vec![0i32]);
+    let hist_size = Vector::<i32>::from(vec![256i32]);
+    let ranges = Vector::<f32>::from(vec![0.0f32, 256.0f32]);
+    let images = Vector::<Mat>::from(vec![gray_image.clone()]);
 
     imgproc::calc_hist(
         &images,
@@ -63,10 +66,8 @@ pub fn check_darkness(gray_image: &Mat, threshold: f64) -> Result<f64> {
         false,
     )?;
 
-    // Get total pixels and dark pixels (first bin, value 0)
     let total: f32 = hist.iter::<f32>()?.map(|(_, v)| v).sum();
     let dark_pixels = *hist.at::<f32>(0)?;
-
     let darkness = (dark_pixels / total * 100.0) as f64;
 
     if darkness > threshold {
@@ -79,31 +80,64 @@ pub fn check_darkness(gray_image: &Mat, threshold: f64) -> Result<f64> {
     }
 }
 
-/// Draw face detection results on image
-pub fn draw_detection(
-    image: &mut Mat,
-    bbox: (f32, f32, f32, f32),
-    landmarks: &[(f32, f32); 5],
-) -> Result<()> {
-    let (x, y, w, h) = bbox;
+pub fn arcface_template(output_size: Size) -> [Point2f; 5] {
+    let scale_x = output_size.width as f32 / 112.0;
+    let scale_y = output_size.height as f32 / 112.0;
 
-    // Draw bounding box
-    let color = Scalar::new(0.0, 255.0, 0.0, 0.0); // Green
+    ARC_FACE_TEMPLATE_112.map(|[x, y]| Point2f::new(x * scale_x, y * scale_y))
+}
+
+pub fn align_face(image: &Mat, landmarks: &FaceLandmarks, output_size: Size) -> Result<Mat> {
+    let src = Vector::<Point2f>::from_iter(
+        landmarks
+            .arcface_points()
+            .into_iter()
+            .map(|(x, y)| Point2f::new(x, y)),
+    );
+    let dst = Vector::<Point2f>::from_iter(arcface_template(output_size));
+    let transform = calib3d::estimate_affine_partial_2d_def(&src, &dst)?;
+
+    if transform.empty() {
+        return Err(Error::Recognition(
+            "Failed to estimate face alignment transform".to_string(),
+        ));
+    }
+
+    let mut aligned = Mat::default();
+    imgproc::warp_affine(
+        image,
+        &mut aligned,
+        &transform,
+        output_size,
+        imgproc::INTER_LINEAR,
+        opencv::core::BORDER_CONSTANT,
+        Scalar::new(0.0, 0.0, 0.0, 0.0),
+    )?;
+
+    Ok(aligned)
+}
+
+pub fn align_detected_face(image: &Mat, detection: &DetectionResult, output_size: Size) -> Result<Mat> {
+    align_face(image, &detection.landmarks, output_size)
+}
+
+pub fn draw_detection(image: &mut Mat, detection: &DetectionResult) -> Result<()> {
+    let (x, y, w, h) = detection.bbox;
+
     imgproc::rectangle(
         image,
         Rect::new(x as i32, y as i32, w as i32, h as i32),
-        color,
+        Scalar::new(0.0, 255.0, 0.0, 0.0),
         2,
         imgproc::LINE_8,
         0,
     )?;
 
-    // Draw landmarks
-    let landmark_color = Scalar::new(255.0, 0.0, 0.0, 0.0); // Blue
-    for (px, py) in landmarks {
+    let landmark_color = Scalar::new(255.0, 0.0, 0.0, 0.0);
+    for (px, py) in detection.landmarks.arcface_points() {
         imgproc::circle(
             image,
-            Point::new(*px as i32, *py as i32),
+            Point::new(px as i32, py as i32),
             3,
             landmark_color,
             -1,
@@ -115,12 +149,10 @@ pub fn draw_detection(
     Ok(())
 }
 
-/// Crop face region from image with padding
 pub fn crop_face(image: &Mat, bbox: (f32, f32, f32, f32), padding: f32) -> Result<Mat> {
     let (x, y, w, h) = bbox;
     let size = image.size()?;
 
-    // Calculate padded region
     let pad_w = w * padding;
     let pad_h = h * padding;
 
@@ -138,10 +170,10 @@ pub fn crop_face(image: &Mat, bbox: (f32, f32, f32, f32), padding: f32) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FaceLandmarks;
 
     #[test]
     fn test_resize_smaller() {
-        // Create a 1000x800 image
         let image = Mat::zeros(800, 1000, opencv::core::CV_8UC3)
             .unwrap()
             .to_mat()
@@ -149,14 +181,12 @@ mod tests {
         let resized = resize_max_dimension(&image, 500.0).unwrap();
         let size = resized.size().unwrap();
 
-        // Should be scaled to 500x400
         assert_eq!(size.width, 500);
         assert_eq!(size.height, 400);
     }
 
     #[test]
     fn test_resize_no_change() {
-        // Create a 300x200 image
         let image = Mat::zeros(200, 300, opencv::core::CV_8UC3)
             .unwrap()
             .to_mat()
@@ -164,8 +194,36 @@ mod tests {
         let resized = resize_max_dimension(&image, 500.0).unwrap();
         let size = resized.size().unwrap();
 
-        // Should remain 300x200
         assert_eq!(size.width, 300);
         assert_eq!(size.height, 200);
+    }
+
+    #[test]
+    fn test_arcface_template_scales_to_output_size() {
+        let template = arcface_template(Size::new(112, 112));
+        assert!((template[0].x - 46.2946).abs() < 1e-4);
+        assert!((template[4].y - 92.2041).abs() < 1e-4);
+
+        let template_224 = arcface_template(Size::new(224, 224));
+        assert!((template_224[0].x - 92.5892).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_align_face_outputs_requested_size() {
+        let image = Mat::zeros(160, 160, opencv::core::CV_8UC3)
+            .unwrap()
+            .to_mat()
+            .unwrap();
+        let landmarks = FaceLandmarks::from_arcface_order([
+            (46.2946, 51.6963),
+            (81.5318, 51.5014),
+            (64.0252, 71.7366),
+            (49.5493, 92.3655),
+            (78.7299, 92.2041),
+        ]);
+        let aligned = align_face(&image, &landmarks, Size::new(112, 112)).unwrap();
+        let size = aligned.size().unwrap();
+        assert_eq!(size.width, 112);
+        assert_eq!(size.height, 112);
     }
 }

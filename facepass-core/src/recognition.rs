@@ -1,115 +1,237 @@
-//! Face recognition module using SFace
+//! Face recognition backends.
 
-use crate::config::RecognitionConfig;
+use crate::alignment::align_detected_face;
+use crate::config::{
+    ColorOrder, InputLayout, ModelsConfig, RecognizerKind, RecognizerModelConfig,
+    RecognizerPreprocessConfig,
+};
 use crate::error::{Error, Result};
-use crate::models::FaceData;
+use crate::models::{DetectionResult, FaceEmbedding};
 use opencv::{
-    core::{Mat, Ptr},
-    objdetect::{FaceRecognizerSF, FaceRecognizerSF_DisType},
+    core::{Mat, Ptr, Scalar, Size, Vector, CV_32F},
+    dnn,
+    objdetect::FaceRecognizerSF,
     prelude::*,
 };
 use std::sync::{Arc, Mutex};
 
-/// Face recognizer wrapper using SFace model
 pub struct FaceRecognizer {
-    recognizer: Arc<Mutex<Ptr<FaceRecognizerSF>>>,
-    #[allow(dead_code)]
-    config: RecognitionConfig,
+    backend: RecognizerBackendImpl,
+    kind: RecognizerKind,
+    config: RecognizerModelConfig,
 }
 
-// Safety: We protect the recognizer with a Mutex
+enum RecognizerBackendImpl {
+    SFace {
+        recognizer: Arc<Mutex<Ptr<FaceRecognizerSF>>>,
+    },
+    Onnx {
+        net: Arc<Mutex<dnn::Net>>,
+    },
+}
+
 unsafe impl Send for FaceRecognizer {}
 unsafe impl Sync for FaceRecognizer {}
 
 impl FaceRecognizer {
-    /// Create a new face recognizer
-    pub fn new(model_path: &str, config: &RecognitionConfig) -> Result<Self> {
-        let recognizer = FaceRecognizerSF::create(
-            model_path, "", 0, // backend_id
-            0, // target_id
-        )
-        .map_err(|e| Error::Recognition(format!("Failed to create SFace recognizer: {}", e)))?;
+    pub fn new(models: &ModelsConfig) -> Result<Self> {
+        match models.active_recognizer {
+            RecognizerKind::Sface => Self::build_sface(&models.sface),
+            RecognizerKind::Mobilefacenet => {
+                Self::build_onnx(RecognizerKind::Mobilefacenet, &models.mobilefacenet)
+            }
+            RecognizerKind::Ghostfacenet => {
+                Self::build_onnx(RecognizerKind::Ghostfacenet, &models.ghostfacenet)
+            }
+        }
+    }
+
+    fn build_sface(config: &RecognizerModelConfig) -> Result<Self> {
+        let recognizer = FaceRecognizerSF::create(&config.path, "", 0, 0).map_err(|e| {
+            Error::Recognition(format!(
+                "Failed to create SFace recognizer from {}: {}",
+                config.path, e
+            ))
+        })?;
 
         Ok(Self {
-            recognizer: Arc::new(Mutex::new(recognizer)),
+            backend: RecognizerBackendImpl::SFace {
+                recognizer: Arc::new(Mutex::new(recognizer)),
+            },
+            kind: RecognizerKind::Sface,
             config: config.clone(),
         })
     }
 
-    /// Align and crop a face from the image using detection result
-    pub fn align_crop(&self, image: &Mat, face_mat: &Mat) -> Result<Mat> {
-        let recognizer = self
-            .recognizer
-            .lock()
-            .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
+    fn build_onnx(kind: RecognizerKind, config: &RecognizerModelConfig) -> Result<Self> {
+        let net = dnn::read_net_from_onnx(&config.path).map_err(|e| {
+            Error::Recognition(format!(
+                "Failed to load {:?} recognizer from {}: {}",
+                kind, config.path, e
+            ))
+        })?;
 
-        let mut aligned = Mat::default();
-        recognizer.align_crop(image, face_mat, &mut aligned)?;
-
-        Ok(aligned)
+        Ok(Self {
+            backend: RecognizerBackendImpl::Onnx {
+                net: Arc::new(Mutex::new(net)),
+            },
+            kind,
+            config: config.clone(),
+        })
     }
 
-    /// Extract face feature from aligned face image
-    pub fn extract_feature(&self, aligned_face: &Mat) -> Result<Mat> {
-        let mut recognizer = self
-            .recognizer
-            .lock()
-            .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
-
-        let mut feature = Mat::default();
-        recognizer.feature(aligned_face, &mut feature)?;
-
-        Ok(feature)
+    pub fn kind(&self) -> RecognizerKind {
+        self.kind
     }
 
-    /// Extract feature and convert to FaceData
-    pub fn extract_face_data(&self, aligned_face: &Mat, label: &str) -> Result<FaceData> {
-        let feature_mat = self.extract_feature(aligned_face)?;
-
-        // Convert Mat to Vec<f32>
-        let feature = mat_to_vec(&feature_mat)?;
-
-        Ok(FaceData::new(label, feature))
+    pub fn model_id(&self) -> &str {
+        &self.config.model_id
     }
 
-    /// Compare two face features using cosine similarity
-    pub fn match_features(&self, feature1: &Mat, feature2: &Mat) -> Result<f64> {
-        let recognizer = self
-            .recognizer
-            .lock()
-            .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
-
-        let score = recognizer.match_(
-            feature1,
-            feature2,
-            FaceRecognizerSF_DisType::FR_COSINE as i32,
-        )?;
-
-        Ok(score)
+    pub fn embedding_dim(&self) -> usize {
+        self.config.embedding_dim
     }
 
-    /// Compare feature Mat with FaceData
-    pub fn match_with_face_data(&self, feature: &Mat, face_data: &FaceData) -> Result<f64> {
-        let stored_feature = vec_to_mat(&face_data.feature)?;
-        self.match_features(feature, &stored_feature)
+    pub fn input_size(&self) -> Size {
+        Size::new(
+            self.config.preprocess.input_width,
+            self.config.preprocess.input_height,
+        )
+    }
+
+    pub fn extract_embedding_from_frame(
+        &self,
+        frame: &Mat,
+        detection: &DetectionResult,
+    ) -> Result<FaceEmbedding> {
+        let aligned = align_detected_face(frame, detection, self.input_size())?;
+        self.extract_embedding(&aligned)
+    }
+
+    pub fn extract_embedding(&self, aligned_face: &Mat) -> Result<FaceEmbedding> {
+        let feature = match &self.backend {
+            RecognizerBackendImpl::SFace { recognizer } => {
+                let mut recognizer = recognizer
+                    .lock()
+                    .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
+                let mut feature = Mat::default();
+                recognizer.feature(aligned_face, &mut feature)?;
+                mat_to_vec(&feature)?
+            }
+            RecognizerBackendImpl::Onnx { net } => {
+                let blob = image_to_tensor(aligned_face, &self.config.preprocess)?;
+                let mut net = net
+                    .lock()
+                    .map_err(|e| Error::Recognition(format!("Failed to lock recognizer: {}", e)))?;
+                net.set_input(&blob, "", 1.0, Scalar::default())?;
+                let out_names = net.get_unconnected_out_layers_names()?;
+                let mut outputs = Vector::<Mat>::new();
+                net.forward(&mut outputs, &out_names)?;
+                if outputs.is_empty() {
+                    return Err(Error::Recognition("Empty recognizer output".to_string()));
+                }
+                mat_to_vec(&outputs.get(0)?)?
+            }
+        };
+
+        if feature.len() != self.config.embedding_dim {
+            return Err(Error::Recognition(format!(
+                "Recognizer '{}' returned {} dims, expected {}",
+                self.config.model_id,
+                feature.len(),
+                self.config.embedding_dim
+            )));
+        }
+
+        let feature = if self.config.preprocess.l2_normalize {
+            l2_normalize(feature)
+        } else {
+            feature
+        };
+
+        let embedding = FaceEmbedding::new(self.config.model_id.clone(), feature);
+        if !embedding.is_valid() {
+            return Err(Error::Recognition(format!(
+                "Recognizer '{}' produced invalid embedding metadata",
+                self.config.model_id
+            )));
+        }
+
+        Ok(embedding)
     }
 }
 
-/// Convert OpenCV Mat to Vec<f32>
 pub fn mat_to_vec(mat: &Mat) -> Result<Vec<f32>> {
-    let total = mat.total();
-    let mut vec = vec![0.0f32; total];
-    let data = mat.data_typed::<f32>()?;
-    vec.copy_from_slice(data);
-    Ok(vec)
+    Ok(mat.data_typed::<f32>()?.to_vec())
 }
 
-/// Convert Vec<f32> to OpenCV Mat
-pub fn vec_to_mat(vec: &[f32]) -> Result<Mat> {
-    let mat = Mat::from_slice(vec)?;
-    // Reshape to 1 row, N columns
-    let reshaped = mat.reshape(1, 1)?;
-    Ok(reshaped.try_clone()?)
+fn image_to_tensor(image: &Mat, config: &RecognizerPreprocessConfig) -> Result<Mat> {
+    let mut resized = Mat::default();
+    opencv::imgproc::resize(
+        image,
+        &mut resized,
+        Size::new(config.input_width, config.input_height),
+        0.0,
+        0.0,
+        opencv::imgproc::INTER_LINEAR,
+    )?;
+
+    let reordered = match config.color_order {
+        ColorOrder::Bgr => resized,
+        ColorOrder::Rgb => {
+            let mut rgb = Mat::default();
+            opencv::imgproc::cvt_color_def(&resized, &mut rgb, opencv::imgproc::COLOR_BGR2RGB)?;
+            rgb
+        }
+    };
+
+    let data = reordered.data_typed::<u8>()?;
+    let width = config.input_width as usize;
+    let height = config.input_height as usize;
+    let channels = 3usize;
+    let mut tensor = vec![0.0f32; width * height * channels];
+
+    for y in 0..height {
+        for x in 0..width {
+            for c in 0..channels {
+                let src_idx = ((y * width + x) * channels) + c;
+                let normalized =
+                    (data[src_idx] as f32 - config.mean[c]) / config.std[c].max(f32::EPSILON);
+                let dst_idx = match config.input_layout {
+                    InputLayout::Nchw => (c * height * width) + (y * width) + x,
+                    InputLayout::Nhwc => ((y * width + x) * channels) + c,
+                };
+                tensor[dst_idx] = normalized;
+            }
+        }
+    }
+
+    let dims = match config.input_layout {
+        InputLayout::Nchw => [1, 3, config.input_height, config.input_width],
+        InputLayout::Nhwc => [1, config.input_height, config.input_width, 3],
+    };
+    let mut blob = Mat::new_nd_with_default(&dims, CV_32F, Scalar::default())?;
+    let blob_data = blob.data_typed_mut::<f32>()?;
+    blob_data.copy_from_slice(&tensor);
+    Ok(blob)
+}
+
+fn l2_normalize(mut feature: Vec<f32>) -> Vec<f32> {
+    let norm = feature
+        .iter()
+        .map(|value| (*value as f64) * (*value as f64))
+        .sum::<f64>()
+        .sqrt();
+
+    if norm <= 1e-12 {
+        return feature;
+    }
+
+    for value in &mut feature {
+        *value = (*value as f64 / norm) as f32;
+    }
+
+    feature
 }
 
 #[cfg(test)]
@@ -117,15 +239,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vec_mat_conversion() {
-        let original: Vec<f32> = (0..128).map(|i| i as f32 * 0.01).collect();
-
-        let mat = vec_to_mat(&original).unwrap();
-        let converted = mat_to_vec(&mat).unwrap();
-
-        assert_eq!(original.len(), converted.len());
-        for (a, b) in original.iter().zip(converted.iter()) {
-            assert!((a - b).abs() < 1e-6);
-        }
+    fn test_l2_normalize_produces_unit_vector() {
+        let normalized = l2_normalize(vec![3.0, 4.0]);
+        let norm = normalized
+            .iter()
+            .map(|value| (*value as f64) * (*value as f64))
+            .sum::<f64>()
+            .sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
     }
 }

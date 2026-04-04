@@ -327,6 +327,12 @@ impl FaceStorage {
     /// Save a face record into an existing group
     pub fn save_face(&self, record: &FaceRecord) -> Result<()> {
         validate_selector_name(&record.label, "Face label")?;
+        if !record.data.is_valid() {
+            return Err(Error::Storage(format!(
+                "Face record '{}' has invalid embedding metadata",
+                record.label
+            )));
+        }
         if self.face_label_exists(&record.username, &record.group_id, &record.label)? {
             return Err(Error::Storage(format!(
                 "Face label '{}' already exists in group '{}'",
@@ -401,10 +407,38 @@ impl FaceStorage {
         Ok(records.into_iter().map(|record| record.data).collect())
     }
 
+    /// Load face data for a specific recognizer model only.
+    pub fn load_face_data_in_group_for_model(
+        &self,
+        username: &str,
+        group_id: &Uuid,
+        model_id: &str,
+        embedding_dim: usize,
+    ) -> Result<Vec<FaceData>> {
+        let records = self.load_faces_in_group(username, group_id)?;
+        Ok(records
+            .into_iter()
+            .filter_map(|record| {
+                let data = record.data;
+                (data.model_id == model_id && data.embedding_dim == embedding_dim).then_some(data)
+            })
+            .collect())
+    }
+
     /// Load face data (features only) for the default group
     pub fn load_default_face_data(&self, username: &str) -> Result<Vec<FaceData>> {
         let group = self.get_default_group(username)?;
         self.load_face_data_in_group(username, &group.id)
+    }
+
+    pub fn load_default_face_data_for_model(
+        &self,
+        username: &str,
+        model_id: &str,
+        embedding_dim: usize,
+    ) -> Result<Vec<FaceData>> {
+        let group = self.get_default_group(username)?;
+        self.load_face_data_in_group_for_model(username, &group.id, model_id, embedding_dim)
     }
 
     /// Resolve one or more face selectors (index or exact label) within a group
@@ -573,6 +607,15 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    fn make_record(username: &str, group_id: Uuid, label: &str, value: f32) -> FaceRecord {
+        FaceRecord::new(
+            username,
+            group_id,
+            label,
+            crate::models::FaceEmbedding::new("ghostfacenet-512", vec![value; 512]),
+        )
+    }
+
     #[test]
     fn test_storage_create() {
         let dir = tempdir().unwrap();
@@ -596,7 +639,7 @@ mod tests {
         let storage = FaceStorage::new(dir.path()).unwrap();
 
         let group = storage.ensure_default_group("testuser").unwrap();
-        let record = FaceRecord::new("testuser", group.id, "test_face", vec![0.1; 128]);
+        let record = make_record("testuser", group.id, "test_face", 0.1);
         storage.save_face(&record).unwrap();
 
         let loaded = storage
@@ -605,7 +648,8 @@ mod tests {
         assert_eq!(loaded.username, "testuser");
         assert_eq!(loaded.group_id, group.id);
         assert_eq!(loaded.label, "test_face");
-        assert_eq!(loaded.data.feature.len(), 128);
+        assert_eq!(loaded.data.feature.len(), 512);
+        assert_eq!(loaded.data.model_id, "ghostfacenet-512");
     }
 
     #[test]
@@ -645,24 +689,10 @@ mod tests {
         let storage = FaceStorage::new(dir.path()).unwrap();
 
         let alice_group = storage.ensure_default_group("alice").unwrap();
-        storage
-            .save_face(&FaceRecord::new(
-                "alice",
-                alice_group.id,
-                "normal",
-                vec![0.1; 128],
-            ))
-            .unwrap();
+        storage.save_face(&make_record("alice", alice_group.id, "normal", 0.1)).unwrap();
 
         let bob_group = storage.ensure_default_group("bob").unwrap();
-        storage
-            .save_face(&FaceRecord::new(
-                "bob",
-                bob_group.id,
-                "normal",
-                vec![0.2; 128],
-            ))
-            .unwrap();
+        storage.save_face(&make_record("bob", bob_group.id, "normal", 0.2)).unwrap();
 
         assert_eq!(storage.resolve_user("0").unwrap(), "alice");
         assert_eq!(storage.resolve_user("1").unwrap(), "bob");
@@ -674,9 +704,9 @@ mod tests {
         let storage = FaceStorage::new(dir.path()).unwrap();
 
         let group = storage.ensure_default_group("testuser").unwrap();
-        let first = FaceRecord::new("testuser", group.id, "normal", vec![0.1; 128]);
-        let second = FaceRecord::new("testuser", group.id, "alt", vec![0.2; 128]);
-        let third = FaceRecord::new("testuser", group.id, "alt", vec![0.3; 128]);
+        let first = make_record("testuser", group.id, "normal", 0.1);
+        let second = make_record("testuser", group.id, "alt", 0.2);
+        let third = make_record("testuser", group.id, "alt", 0.3);
         storage.save_face(&first).unwrap();
         storage.save_face(&second).unwrap();
         let error = storage.save_face(&third).unwrap_err().to_string();
@@ -725,20 +755,10 @@ mod tests {
 
         let group = storage.ensure_default_group("testuser").unwrap();
         storage
-            .save_face(&FaceRecord::new(
-                "testuser",
-                group.id,
-                "face_1",
-                vec![0.1; 128],
-            ))
+            .save_face(&make_record("testuser", group.id, "face_1", 0.1))
             .unwrap();
         storage
-            .save_face(&FaceRecord::new(
-                "testuser",
-                group.id,
-                "face_3",
-                vec![0.2; 128],
-            ))
+            .save_face(&make_record("testuser", group.id, "face_3", 0.2))
             .unwrap();
 
         assert_eq!(
@@ -758,20 +778,10 @@ mod tests {
         let second_group = storage.create_group("testuser", "backup").unwrap();
 
         storage
-            .save_face(&FaceRecord::new(
-                "testuser",
-                first_group.id,
-                "normal",
-                vec![0.1; 128],
-            ))
+            .save_face(&make_record("testuser", first_group.id, "normal", 0.1))
             .unwrap();
         storage
-            .save_face(&FaceRecord::new(
-                "testuser",
-                second_group.id,
-                "normal",
-                vec![0.2; 128],
-            ))
+            .save_face(&make_record("testuser", second_group.id, "normal", 0.2))
             .unwrap();
     }
 
@@ -782,12 +792,7 @@ mod tests {
 
         let group = storage.ensure_default_group("testuser").unwrap();
         storage
-            .save_face(&FaceRecord::new(
-                "testuser",
-                group.id,
-                "normal",
-                vec![0.1; 128],
-            ))
+            .save_face(&make_record("testuser", group.id, "normal", 0.1))
             .unwrap();
 
         assert!(storage
@@ -808,8 +813,8 @@ mod tests {
         let storage = FaceStorage::new(dir.path()).unwrap();
 
         let group = storage.ensure_default_group("testuser").unwrap();
-        let first = FaceRecord::new("testuser", group.id, "one", vec![0.1; 128]);
-        let second = FaceRecord::new("testuser", group.id, "two", vec![0.2; 128]);
+        let first = make_record("testuser", group.id, "one", 0.1);
+        let second = make_record("testuser", group.id, "two", 0.2);
         storage.save_face(&first).unwrap();
         storage.save_face(&second).unwrap();
 

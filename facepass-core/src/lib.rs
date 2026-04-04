@@ -11,17 +11,18 @@ pub mod error;
 pub mod face_validation;
 pub mod matching;
 pub mod models;
+pub mod pipeline;
 pub mod recognition;
 pub mod security;
 pub mod storage;
 
 pub use config::{Config, ConfigFile, DaemonRuntimeState, ResolvedConfig};
 pub use error::{Error, Result};
-pub use models::{FaceData, FaceRecord};
+pub use models::{FaceData, FaceEmbedding, FaceRecord};
 
 /// Re-export commonly used types
 pub mod prelude {
     pub use crate::config::{Config, ConfigFile, DaemonRuntimeState, ResolvedConfig};
     pub use crate::error::{Error, Result};
-    pub use crate::models::{FaceData, FaceRecord};
+    pub use crate::models::{FaceData, FaceEmbedding, FaceRecord};
 }

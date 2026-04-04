@@ -2,7 +2,8 @@
 
 use crate::config::{AntiSpoofConfig, AntiSpoofMode, ModelsConfig};
 use crate::error::{Error, Result};
-use crate::face_validation::{face_row_to_bbox, validate_face};
+use crate::face_validation::{detection_bbox, validate_face};
+use crate::models::DetectionResult;
 use opencv::{
     core::{self, Mat, Rect, Scalar, Size, Vector, CV_32F, CV_8UC3},
     dnn, imgproc,
@@ -74,11 +75,11 @@ impl AntiSpoofDetector {
     pub fn check_liveness(
         &self,
         frame: &Mat,
-        face_row: &Mat,
+        detection: &DetectionResult,
         valid_crop_scale: f32,
     ) -> Result<f32> {
-        validate_face(frame, face_row, valid_crop_scale)?;
-        let bbox = face_row_to_bbox(face_row)?;
+        validate_face(frame, detection, valid_crop_scale)?;
+        let bbox = detection_bbox(detection);
 
         let mut fused_probs: Option<Vec<f32>> = None;
         let mut model_count = 0usize;

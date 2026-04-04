@@ -319,13 +319,6 @@ fn print_config(config: &Config) {
     println!("  frame_height = {}", config.video.frame_height);
     println!();
 
-    println!("[detection]");
-    println!("  score_threshold = {}", config.detection.score_threshold);
-    println!("  nms_threshold = {}", config.detection.nms_threshold);
-    println!("  input_width = {}", config.detection.input_width);
-    println!("  input_height = {}", config.detection.input_height);
-    println!();
-
     println!("[recognition]");
     println!(
         "  similarity_threshold = {}",
@@ -369,8 +362,14 @@ fn print_config(config: &Config) {
     println!();
 
     println!("[models]");
-    println!("  yunet_path = \"{}\"", config.models.yunet_path);
-    println!("  sface_path = \"{}\"", config.models.sface_path);
+    println!(
+        "  active_detector = \"{}\"",
+        config.models.active_detector.as_str()
+    );
+    println!(
+        "  active_recognizer = \"{}\"",
+        config.models.active_recognizer.as_str()
+    );
     println!(
         "  anti_spoof_v2_path = \"{}\"",
         config.models.anti_spoof_v2_path
@@ -380,6 +379,26 @@ fn print_config(config: &Config) {
         config.models.anti_spoof_v1se_path
     );
     println!();
+
+    println!("[models.yunet]");
+    println!("  path = \"{}\"", config.models.yunet.path);
+    println!("  input_width = {}", config.models.yunet.input_width);
+    println!("  input_height = {}", config.models.yunet.input_height);
+    println!("  score_threshold = {}", config.models.yunet.score_threshold);
+    println!("  nms_threshold = {}", config.models.yunet.nms_threshold);
+    println!();
+
+    println!("[models.scrfd]");
+    println!("  path = \"{}\"", config.models.scrfd.path);
+    println!("  input_width = {}", config.models.scrfd.input_width);
+    println!("  input_height = {}", config.models.scrfd.input_height);
+    println!("  score_threshold = {}", config.models.scrfd.score_threshold);
+    println!("  nms_threshold = {}", config.models.scrfd.nms_threshold);
+    println!();
+
+    print_recognizer_model("models.sface", &config.models.sface);
+    print_recognizer_model("models.mobilefacenet", &config.models.mobilefacenet);
+    print_recognizer_model("models.ghostfacenet", &config.models.ghostfacenet);
 
     println!("[anti_spoof]");
     println!("  enabled = {}", config.anti_spoof.enabled);
@@ -393,6 +412,36 @@ fn print_config(config: &Config) {
 
     println!("[storage]");
     println!("  data_dir = \"{}\"", config.storage.data_dir);
+}
+
+fn print_recognizer_model(section: &str, model: &facepass_core::config::RecognizerModelConfig) {
+    println!("[{}]", section);
+    println!("  path = \"{}\"", model.path);
+    println!("  model_id = \"{}\"", model.model_id);
+    println!("  embedding_dim = {}", model.embedding_dim);
+    println!("  preprocess.input_width = {}", model.preprocess.input_width);
+    println!("  preprocess.input_height = {}", model.preprocess.input_height);
+    println!(
+        "  preprocess.input_layout = \"{}\"",
+        model.preprocess.input_layout.as_str()
+    );
+    println!(
+        "  preprocess.color_order = \"{}\"",
+        model.preprocess.color_order.as_str()
+    );
+    println!(
+        "  preprocess.mean = [{}, {}, {}]",
+        model.preprocess.mean[0], model.preprocess.mean[1], model.preprocess.mean[2]
+    );
+    println!(
+        "  preprocess.std = [{}, {}, {}]",
+        model.preprocess.std[0], model.preprocess.std[1], model.preprocess.std[2]
+    );
+    println!(
+        "  preprocess.l2_normalize = {}",
+        model.preprocess.l2_normalize
+    );
+    println!();
 }
 
 #[cfg(test)]

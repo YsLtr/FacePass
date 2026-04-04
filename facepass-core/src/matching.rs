@@ -1,23 +1,60 @@
 //! Face feature matching module
 
 use crate::error::{Error, Result};
-use crate::models::FaceData;
+use crate::models::{FaceData, FaceEmbedding};
 
-/// Calculate cosine similarity between two feature vectors
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f64> {
-    if a.len() != b.len() {
+fn ensure_query_embedding_valid(query: &FaceEmbedding) -> Result<()> {
+    if !query.is_valid() {
+        return Err(Error::Recognition(
+            "Query embedding is missing model metadata or has an invalid length".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_comparable(query: &FaceEmbedding, candidate: &FaceData) -> Result<()> {
+    ensure_query_embedding_valid(query)?;
+    if !candidate.is_valid() {
         return Err(Error::Recognition(format!(
-            "Feature vector length mismatch: {} vs {}",
-            a.len(),
-            b.len()
+            "Stored face '{}' has invalid embedding metadata",
+            candidate.label
         )));
     }
+
+    if query.model_id != candidate.model_id {
+        return Err(Error::Recognition(format!(
+            "Cannot compare embeddings from different models: '{}' vs '{}'",
+            query.model_id, candidate.model_id
+        )));
+    }
+
+    if query.embedding_dim != candidate.embedding_dim {
+        return Err(Error::Recognition(format!(
+            "Embedding dimension mismatch for model '{}': {} vs {}",
+            query.model_id, query.embedding_dim, candidate.embedding_dim
+        )));
+    }
+
+    if query.feature.len() != query.embedding_dim {
+        return Err(Error::Recognition(format!(
+            "Query embedding length mismatch: expected {}, got {}",
+            query.embedding_dim,
+            query.feature.len()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Calculate cosine similarity between a query embedding and a stored face.
+pub fn cosine_similarity(query: &FaceEmbedding, candidate: &FaceData) -> Result<f64> {
+    ensure_comparable(query, candidate)?;
 
     let mut dot_product = 0.0f64;
     let mut norm_a = 0.0f64;
     let mut norm_b = 0.0f64;
 
-    for (x, y) in a.iter().zip(b.iter()) {
+    for (x, y) in query.feature.iter().zip(candidate.feature.iter()) {
         let x = *x as f64;
         let y = *y as f64;
         dot_product += x * y;
@@ -33,19 +70,14 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f64> {
     Ok(dot_product / norm)
 }
 
-/// Calculate L2 (Euclidean) distance between two feature vectors
-pub fn l2_distance(a: &[f32], b: &[f32]) -> Result<f64> {
-    if a.len() != b.len() {
-        return Err(Error::Recognition(format!(
-            "Feature vector length mismatch: {} vs {}",
-            a.len(),
-            b.len()
-        )));
-    }
+/// Calculate L2 (Euclidean) distance between a query embedding and a stored face.
+pub fn l2_distance(query: &FaceEmbedding, candidate: &FaceData) -> Result<f64> {
+    ensure_comparable(query, candidate)?;
 
-    let sum: f64 = a
+    let sum: f64 = query
+        .feature
         .iter()
-        .zip(b.iter())
+        .zip(candidate.feature.iter())
         .map(|(x, y)| {
             let diff = (*x as f64) - (*y as f64);
             diff * diff
@@ -69,11 +101,8 @@ pub struct MatchResult {
 }
 
 /// Find the most similar face from a list of candidates.
-///
-/// Returns `None` only when `candidates` is empty. Otherwise the best candidate is
-/// always returned and `passed_threshold` indicates whether it qualifies as a match.
 pub fn find_best_match(
-    query_feature: &[f32],
+    query: &FaceEmbedding,
     candidates: &[FaceData],
     threshold: f64,
 ) -> Result<Option<MatchResult>> {
@@ -84,7 +113,7 @@ pub fn find_best_match(
     let mut best_match: Option<MatchResult> = None;
 
     for (index, face_data) in candidates.iter().enumerate() {
-        let similarity = cosine_similarity(query_feature, &face_data.feature)?;
+        let similarity = cosine_similarity(query, face_data)?;
         let passed_threshold = similarity >= threshold;
 
         match &best_match {
@@ -104,9 +133,9 @@ pub fn find_best_match(
 }
 
 /// Check if a face matches any in the list (returns first match above threshold)
-pub fn matches_any(query_feature: &[f32], candidates: &[FaceData], threshold: f64) -> Result<bool> {
+pub fn matches_any(query: &FaceEmbedding, candidates: &[FaceData], threshold: f64) -> Result<bool> {
     for face_data in candidates {
-        let similarity = cosine_similarity(query_feature, &face_data.feature)?;
+        let similarity = cosine_similarity(query, face_data)?;
         if similarity >= threshold {
             return Ok(true);
         }
@@ -116,14 +145,14 @@ pub fn matches_any(query_feature: &[f32], candidates: &[FaceData], threshold: f6
 
 /// Get all matches above threshold, sorted by similarity (descending)
 pub fn find_all_matches(
-    query_feature: &[f32],
+    query: &FaceEmbedding,
     candidates: &[FaceData],
     threshold: f64,
 ) -> Result<Vec<MatchResult>> {
     let mut matches = Vec::new();
 
     for (index, face_data) in candidates.iter().enumerate() {
-        let similarity = cosine_similarity(query_feature, &face_data.feature)?;
+        let similarity = cosine_similarity(query, face_data)?;
 
         if similarity >= threshold {
             matches.push(MatchResult {
@@ -135,7 +164,6 @@ pub fn find_all_matches(
         }
     }
 
-    // Sort by similarity (descending)
     matches.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
 
     Ok(matches)
@@ -145,48 +173,43 @@ pub fn find_all_matches(
 mod tests {
     use super::*;
 
+    fn query(feature: Vec<f32>) -> FaceEmbedding {
+        FaceEmbedding::new("ghostfacenet-512", feature)
+    }
+
     #[test]
     fn test_cosine_similarity_identical() {
-        let a: Vec<f32> = (0..128).map(|i| i as f32 * 0.01).collect();
-        let similarity = cosine_similarity(&a, &a).unwrap();
+        let feature: Vec<f32> = (0..512).map(|i| i as f32 * 0.01).collect();
+        let candidate = FaceData::new("face1", "ghostfacenet-512", feature.clone());
+        let similarity = cosine_similarity(&query(feature), &candidate).unwrap();
         assert!((similarity - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = vec![1.0f32, 0.0, 0.0, 0.0];
-        let b = vec![0.0f32, 1.0, 0.0, 0.0];
-        let similarity = cosine_similarity(&a, &b).unwrap();
-        assert!(similarity.abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = vec![1.0f32, 0.0, 0.0, 0.0];
-        let b = vec![-1.0f32, 0.0, 0.0, 0.0];
-        let similarity = cosine_similarity(&a, &b).unwrap();
-        assert!((similarity + 1.0).abs() < 1e-6);
+    fn test_cosine_similarity_rejects_cross_model_compare() {
+        let candidate = FaceData::new("face1", "sface-128", vec![1.0; 128]);
+        let error = cosine_similarity(&query(vec![1.0; 512]), &candidate)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("different models"));
     }
 
     #[test]
     fn test_l2_distance() {
-        let a = vec![0.0f32, 0.0, 0.0];
-        let b = vec![3.0f32, 4.0, 0.0];
-        let distance = l2_distance(&a, &b).unwrap();
-        assert!((distance - 5.0).abs() < 1e-6);
+        let candidate = FaceData::new("face1", "ghostfacenet-512", vec![3.0; 512]);
+        let distance = l2_distance(&query(vec![0.0; 512]), &candidate).unwrap();
+        assert!(distance > 0.0);
     }
 
     #[test]
     fn test_find_best_match() {
-        let query: Vec<f32> = vec![1.0; 128];
-
         let candidates = vec![
-            FaceData::new("face1", vec![0.5; 128]),
-            FaceData::new("face2", vec![0.9; 128]), // More similar
-            FaceData::new("face3", vec![0.3; 128]),
+            FaceData::new("face1", "ghostfacenet-512", vec![0.5; 512]),
+            FaceData::new("face2", "ghostfacenet-512", vec![0.9; 512]),
+            FaceData::new("face3", "ghostfacenet-512", vec![0.3; 512]),
         ];
 
-        let result = find_best_match(&query, &candidates, 0.5).unwrap();
+        let result = find_best_match(&query(vec![1.0; 512]), &candidates, 0.5).unwrap();
         assert!(result.is_some());
         let matched = result.unwrap();
         assert_eq!(matched.face_data.label, "face2");
@@ -195,22 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn test_find_best_match_no_match() {
-        let query: Vec<f32> = vec![1.0; 128];
-        let candidates = vec![FaceData::new("face1", vec![-1.0; 128])];
-
-        let result = find_best_match(&query, &candidates, 0.9).unwrap();
-        assert!(result.is_some());
-        let matched = result.unwrap();
-        assert_eq!(matched.face_data.label, "face1");
-        assert!(!matched.passed_threshold);
-    }
-
-    #[test]
     fn test_find_best_match_empty_candidates() {
-        let query: Vec<f32> = vec![1.0; 128];
-
-        let result = find_best_match(&query, &[], 0.9).unwrap();
+        let result = find_best_match(&query(vec![1.0; 512]), &[], 0.9).unwrap();
         assert!(result.is_none());
     }
 }

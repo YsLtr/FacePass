@@ -3,32 +3,145 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Face feature descriptor - stores the 128-dimensional feature vector
+/// Canonical 5-point face landmarks in ArcFace order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FaceLandmarks {
+    pub left_eye: (f32, f32),
+    pub right_eye: (f32, f32),
+    pub nose: (f32, f32),
+    pub mouth_left: (f32, f32),
+    pub mouth_right: (f32, f32),
+}
+
+impl FaceLandmarks {
+    pub fn from_arcface_order(points: [(f32, f32); 5]) -> Self {
+        Self {
+            left_eye: points[0],
+            right_eye: points[1],
+            nose: points[2],
+            mouth_left: points[3],
+            mouth_right: points[4],
+        }
+    }
+
+    pub fn from_yunet_order(points: [(f32, f32); 5]) -> Self {
+        Self {
+            right_eye: points[0],
+            left_eye: points[1],
+            nose: points[2],
+            mouth_right: points[3],
+            mouth_left: points[4],
+        }
+    }
+
+    pub fn arcface_points(&self) -> [(f32, f32); 5] {
+        [
+            self.left_eye,
+            self.right_eye,
+            self.nose,
+            self.mouth_left,
+            self.mouth_right,
+        ]
+    }
+}
+
+/// Unified face detection result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetectionResult {
+    /// Bounding box (x, y, width, height)
+    pub bbox: (f32, f32, f32, f32),
+    /// Detection confidence score
+    pub confidence: f32,
+    /// Canonical 5 facial landmarks in ArcFace order
+    pub landmarks: FaceLandmarks,
+}
+
+impl DetectionResult {
+    pub fn bbox(&self) -> (f32, f32, f32, f32) {
+        self.bbox
+    }
+
+    pub fn landmarks(&self) -> &FaceLandmarks {
+        &self.landmarks
+    }
+
+    pub fn bbox_xyxy(&self) -> (f32, f32, f32, f32) {
+        let (x, y, w, h) = self.bbox;
+        (x, y, x + w, y + h)
+    }
+}
+
+/// Fresh embedding extracted by the active recognizer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FaceData {
-    /// Face label/name
-    pub label: String,
-    /// 128-dimensional feature vector from SFace
+pub struct FaceEmbedding {
+    pub model_id: String,
+    pub embedding_dim: usize,
     pub feature: Vec<f32>,
 }
 
-impl FaceData {
-    /// Create new FaceData from label and feature vector
-    pub fn new(label: impl Into<String>, feature: Vec<f32>) -> Self {
+impl FaceEmbedding {
+    pub fn new(model_id: impl Into<String>, feature: Vec<f32>) -> Self {
+        let embedding_dim = feature.len();
         Self {
-            label: label.into(),
+            model_id: model_id.into(),
+            embedding_dim,
             feature,
         }
     }
 
-    /// Get the feature vector as a slice
+    pub fn is_valid(&self) -> bool {
+        !self.model_id.trim().is_empty()
+            && self.embedding_dim > 0
+            && self.embedding_dim == self.feature.len()
+    }
+}
+
+/// Stored face feature descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaceData {
+    /// Face label/name
+    pub label: String,
+    /// Embedding model identity
+    pub model_id: String,
+    /// Stored embedding dimension
+    pub embedding_dim: usize,
+    /// Embedding vector
+    pub feature: Vec<f32>,
+}
+
+impl FaceData {
+    pub fn new(
+        label: impl Into<String>,
+        model_id: impl Into<String>,
+        feature: Vec<f32>,
+    ) -> Self {
+        let embedding_dim = feature.len();
+        Self {
+            label: label.into(),
+            model_id: model_id.into(),
+            embedding_dim,
+            feature,
+        }
+    }
+
+    pub fn from_embedding(label: impl Into<String>, embedding: FaceEmbedding) -> Self {
+        Self {
+            label: label.into(),
+            model_id: embedding.model_id,
+            embedding_dim: embedding.embedding_dim,
+            feature: embedding.feature,
+        }
+    }
+
     pub fn feature_slice(&self) -> &[f32] {
         &self.feature
     }
 
-    /// Validate the feature vector (should be 128 dimensions)
     pub fn is_valid(&self) -> bool {
-        self.feature.len() == 128
+        !self.label.trim().is_empty()
+            && !self.model_id.trim().is_empty()
+            && self.embedding_dim > 0
+            && self.embedding_dim == self.feature.len()
     }
 }
 
@@ -50,12 +163,11 @@ pub struct FaceRecord {
 }
 
 impl FaceRecord {
-    /// Create a new face record
     pub fn new(
         username: impl Into<String>,
         group_id: Uuid,
         label: impl Into<String>,
-        feature: Vec<f32>,
+        embedding: FaceEmbedding,
     ) -> Self {
         let label_str = label.into();
         Self {
@@ -64,11 +176,10 @@ impl FaceRecord {
             group_id,
             label: label_str.clone(),
             created_at: chrono_timestamp(),
-            data: FaceData::new(label_str, feature),
+            data: FaceData::from_embedding(label_str, embedding),
         }
     }
 
-    /// Get the filename for this record
     pub fn filename(&self) -> String {
         format!("{}.face", self.id)
     }
@@ -88,7 +199,6 @@ pub struct FaceGroupSummary {
 }
 
 impl FaceGroupSummary {
-    /// Create a new empty group summary
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -113,7 +223,6 @@ pub struct FaceGroupMetadata {
 }
 
 impl FaceGroupMetadata {
-    /// Create a new empty group
     pub fn new(name: impl Into<String>) -> Self {
         let summary = FaceGroupSummary::new(name);
         Self {
@@ -124,7 +233,6 @@ impl FaceGroupMetadata {
         }
     }
 
-    /// Create a summary view of this group
     pub fn summary(&self) -> FaceGroupSummary {
         FaceGroupSummary {
             id: self.id,
@@ -134,12 +242,10 @@ impl FaceGroupMetadata {
         }
     }
 
-    /// Add a face ID
     pub fn add_face(&mut self, id: Uuid) {
         self.face_ids.push(id);
     }
 
-    /// Remove a face ID
     pub fn remove_face(&mut self, id: &Uuid) -> bool {
         if let Some(pos) = self.face_ids.iter().position(|x| x == id) {
             self.face_ids.remove(pos);
@@ -164,7 +270,6 @@ pub struct UserMetadata {
 }
 
 impl UserMetadata {
-    /// Create new user metadata
     pub fn new(username: impl Into<String>) -> Self {
         Self {
             username: username.into(),
@@ -174,12 +279,10 @@ impl UserMetadata {
         }
     }
 
-    /// Total faces across all groups
     pub fn total_face_count(&self) -> usize {
         self.groups.iter().map(|group| group.face_count).sum()
     }
 
-    /// Add or update a group summary
     pub fn upsert_group(&mut self, group: FaceGroupSummary) {
         if let Some(existing) = self
             .groups
@@ -193,7 +296,6 @@ impl UserMetadata {
         self.last_updated = chrono_timestamp();
     }
 
-    /// Remove a group by ID
     pub fn remove_group(&mut self, id: &Uuid) -> bool {
         if let Some(pos) = self.groups.iter().position(|group| group.id == *id) {
             self.groups.remove(pos);
@@ -207,7 +309,6 @@ impl UserMetadata {
         }
     }
 
-    /// Get the current default group
     pub fn default_group(&self) -> Option<&FaceGroupSummary> {
         let default_group_id = self.default_group_id?;
         self.groups
@@ -231,7 +332,6 @@ pub struct AuthRequest {
 }
 
 impl AuthRequest {
-    /// Create a new authentication request
     pub fn new(username: impl Into<String>, source: impl Into<String>, timeout: u32) -> Self {
         Self {
             msg_type: "auth".to_string(),
@@ -250,7 +350,6 @@ pub struct CancelRequest {
 }
 
 impl CancelRequest {
-    /// Create a new cancellation request
     pub fn new() -> Self {
         Self {
             msg_type: "cancel".to_string(),
@@ -272,7 +371,6 @@ pub struct AuthResponse {
 }
 
 impl AuthResponse {
-    /// Create a success response
     pub fn success(confidence: f64, label: impl Into<String>) -> Self {
         Self {
             success: true,
@@ -282,7 +380,6 @@ impl AuthResponse {
         }
     }
 
-    /// Create a failure response
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             success: false,
@@ -292,7 +389,6 @@ impl AuthResponse {
         }
     }
 
-    /// Create a generic response message
     pub fn message(success: bool, message: impl Into<String>) -> Self {
         Self {
             success,
@@ -302,41 +398,15 @@ impl AuthResponse {
         }
     }
 
-    /// Create a timeout response
     pub fn timeout() -> Self {
         Self::failure("Authentication timeout")
     }
 
-    /// Create a no face data response
     pub fn no_face_data() -> Self {
         Self::failure("No face data registered for user")
     }
 }
 
-/// Detection result from YuNet
-#[derive(Debug, Clone)]
-pub struct DetectionResult {
-    /// Bounding box (x, y, width, height)
-    pub bbox: (f32, f32, f32, f32),
-    /// Detection confidence score
-    pub confidence: f32,
-    /// 5 facial landmarks: right eye, left eye, nose tip, right mouth corner, left mouth corner
-    pub landmarks: [(f32, f32); 5],
-}
-
-impl DetectionResult {
-    /// Get bounding box as (x, y, width, height)
-    pub fn bbox(&self) -> (f32, f32, f32, f32) {
-        self.bbox
-    }
-
-    /// Get landmarks array
-    pub fn landmarks(&self) -> &[(f32, f32); 5] {
-        &self.landmarks
-    }
-}
-
-/// Get current Unix timestamp
 fn chrono_timestamp() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -350,21 +420,43 @@ mod tests {
 
     #[test]
     fn test_face_data_validation() {
-        let valid = FaceData::new("test", vec![0.0; 128]);
+        let valid = FaceData::new("test", "ghostfacenet-512", vec![0.0; 512]);
         assert!(valid.is_valid());
 
-        let invalid = FaceData::new("test", vec![0.0; 64]);
+        let invalid = FaceData {
+            embedding_dim: 128,
+            ..FaceData::new("test", "ghostfacenet-512", vec![0.0; 64])
+        };
         assert!(!invalid.is_valid());
     }
 
     #[test]
     fn test_face_record_creation() {
         let group_id = Uuid::new_v4();
-        let record = FaceRecord::new("testuser", group_id, "Test Face", vec![0.0; 128]);
+        let embedding = FaceEmbedding::new("ghostfacenet-512", vec![0.0; 512]);
+        let record = FaceRecord::new("testuser", group_id, "Test Face", embedding);
         assert_eq!(record.username, "testuser");
         assert_eq!(record.group_id, group_id);
         assert_eq!(record.label, "Test Face");
         assert!(record.data.is_valid());
+        assert_eq!(record.data.model_id, "ghostfacenet-512");
+        assert_eq!(record.data.embedding_dim, 512);
+    }
+
+    #[test]
+    fn test_face_landmarks_reorders_yunet_output() {
+        let landmarks = FaceLandmarks::from_yunet_order([
+            (10.0, 11.0),
+            (20.0, 21.0),
+            (30.0, 31.0),
+            (40.0, 41.0),
+            (50.0, 51.0),
+        ]);
+
+        assert_eq!(landmarks.left_eye, (20.0, 21.0));
+        assert_eq!(landmarks.right_eye, (10.0, 11.0));
+        assert_eq!(landmarks.mouth_left, (50.0, 51.0));
+        assert_eq!(landmarks.mouth_right, (40.0, 41.0));
     }
 
     #[test]

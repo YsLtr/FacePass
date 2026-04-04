@@ -5,13 +5,10 @@ use super::{
 };
 use anyhow::{anyhow, Result};
 use facepass_core::{
-    anti_spoofing::AntiSpoofDetector,
     camera::Camera,
     config::Config,
-    detection::FaceDetector,
-    face_validation::select_primary_face,
-    models::FaceRecord,
-    recognition::FaceRecognizer,
+    models::{DetectionResult, FaceEmbedding, FaceRecord},
+    pipeline::FaceRuntime,
     storage::{validate_selector_name, FaceStorage},
 };
 use opencv::{
@@ -41,17 +38,16 @@ pub fn run(
     let username = resolve_username(&storage, user.as_deref())?;
     ensure_user_access(&username, "add faces for other users")?;
     let group = resolve_group_for_add(&storage, &username, group.as_deref())?;
-    let current_count = group.face_count;
 
     if debug {
         println!("Adding face for user: {}", username);
         println!("Target group: {} ({})", group.name, group.id);
     }
 
-    if current_count >= config.recognition.max_faces_per_group as usize {
-        return Err(anyhow::anyhow!(
+    if group.face_count >= config.recognition.max_faces_per_group as usize {
+        return Err(anyhow!(
             "Maximum face limit reached ({}/{}). Remove some faces first.",
-            current_count,
+            group.face_count,
             config.recognition.max_faces_per_group
         ));
     }
@@ -72,31 +68,25 @@ pub fn run(
     };
 
     println!("Initializing camera...");
-
-    // Initialize components
     let camera = Camera::open(&config.video)?;
     let actual_width = camera.frame_width().ok();
     let actual_height = camera.frame_height().ok();
-    let detector = FaceDetector::new(&config.models.yunet_path, &config.detection)?;
-    let recognizer = FaceRecognizer::new(&config.models.sface_path, &config.recognition)?;
-    let anti_spoof = if config.anti_spoof.enabled {
-        match AntiSpoofDetector::new(&config.models, &config.anti_spoof) {
-            Ok(d) => {
-                println!(
-                    "Anti-spoofing enabled (threshold: {:.2}, mode: {})",
-                    config.anti_spoof.threshold,
-                    config.anti_spoof.mode.as_str()
-                );
-                Some(d)
-            }
-            Err(e) => {
-                return Err(anyhow!("Anti-spoof error: {}", e));
-            }
-        }
-    } else {
-        None
-    };
+    let runtime = FaceRuntime::new(&config)?;
 
+    println!(
+        "Detector: {} | Recognizer: {}",
+        config.models.active_detector.as_str(),
+        config.models.active_recognizer.as_str()
+    );
+    if config.anti_spoof.enabled {
+        println!(
+            "Anti-spoofing enabled (threshold: {:.2}, mode: {})",
+            config.anti_spoof.threshold,
+            config.anti_spoof.mode.as_str()
+        );
+    } else {
+        println!("Anti-spoofing disabled");
+    }
     println!("Camera opened successfully.");
     if let (Some(width), Some(height)) = (actual_width, actual_height) {
         println!(
@@ -113,7 +103,6 @@ pub fn run(
         println!("Press Ctrl+C to cancel.\n");
     }
 
-    // Try to capture a good face
     let max_attempts = if debug || view || config.video.max_frames == 0 {
         u32::MAX
     } else {
@@ -121,9 +110,10 @@ pub fn run(
     };
     let mut attempt = 0;
     let mut best_confidence = 0.0f32;
-    let mut best_feature: Option<Vec<f32>> = None;
+    let mut best_embedding: Option<FaceEmbedding> = None;
     let mut capture_requested = false;
     let mut last_status_width = 0usize;
+    let detector_threshold = config.models.active_detector_config().score_threshold;
     let mut command_input = if view || debug {
         Some(CommandInput::capture_single_keys()?)
     } else {
@@ -148,7 +138,7 @@ pub fn run(
                         return Ok(AddLoopOutcome::Cancelled);
                     }
                     CommandKey::Action => {
-                        if !capture_requested && best_feature.is_none() {
+                        if !capture_requested && best_embedding.is_none() {
                             print_status_line(
                                 &mut last_status_width,
                                 &format!(
@@ -163,10 +153,8 @@ pub fn run(
             }
 
             attempt += 1;
-
-            // Read frame
             let frame = match camera.read_frame() {
-                Ok(f) => f,
+                Ok(frame) => frame,
                 Err(e) => {
                     if debug {
                         print_status_line(
@@ -178,10 +166,9 @@ pub fn run(
                 }
             };
 
-            // Detect face
-            let faces = match detector.detect_raw(&frame) {
-                Ok(f) => f,
-                Err(_) => {
+            let detections = match runtime.detect_faces(&frame) {
+                Ok(detections) if !detections.is_empty() => detections,
+                _ => {
                     print_status_line(
                         &mut last_status_width,
                         &format!("Searching for face... ({}/{})", attempt, max_attempts),
@@ -204,105 +191,91 @@ pub fn run(
                 }
             };
 
-            let face_row =
-                match select_primary_face(&frame, &faces, config.recognition.valid_crop_scale) {
-                    Ok(face_row) => face_row,
-                    Err(facepass_core::Error::InvalidFace(reason)) => {
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+            let detection = match runtime.select_primary_face(&frame, &detections) {
+                Ok(detection) => detection,
+                Err(facepass_core::Error::InvalidFace(reason)) => {
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+                    )?;
+                    if view {
+                        let mut display = frame.try_clone()?;
+                        draw_faces(&mut display, &detections, None, None)?;
+                        draw_required_crops(&mut display, &detections, runtime.valid_crop_scale())?;
+                        draw_text(
+                            &mut display,
+                            0,
+                            &format!("Invalid face: {}", reason),
+                            Scalar::new(0.0, 0.0, 255.0, 0.0),
                         )?;
-                        if view {
-                            let mut display = frame.try_clone()?;
-                            draw_faces(&mut display, &faces, None, None)?;
-                            draw_required_crops(
-                                &mut display,
-                                &faces,
-                                config.recognition.valid_crop_scale,
-                            )?;
-                            draw_text(
-                                &mut display,
-                                0,
-                                &format!("Invalid face: {}", reason),
-                                Scalar::new(0.0, 0.0, 255.0, 0.0),
-                            )?;
-                            highgui::imshow(WINDOW_NAME, &display)?;
-                            if should_abort(highgui::wait_key(1)?) {
-                                clear_status_line(&mut last_status_width)?;
-                                return Ok(AddLoopOutcome::Cancelled);
-                            }
+                        highgui::imshow(WINDOW_NAME, &display)?;
+                        if should_abort(highgui::wait_key(1)?) {
+                            clear_status_line(&mut last_status_width)?;
+                            return Ok(AddLoopOutcome::Cancelled);
                         }
-                        continue;
                     }
-                    Err(_) => continue,
-                };
+                    continue;
+                }
+                Err(_) => continue,
+            };
 
-            let confidence = *face_row.at_2d::<f32>(0, 14)?;
-
+            let confidence = detection.confidence;
             let mut liveness_score: Option<f32> = None;
             let mut liveness_status = "disabled";
             let mut liveness_allowed = true;
-            if let Some(ref anti_spoof_detector) = anti_spoof {
-                match anti_spoof_detector.check_liveness(
-                    &frame,
-                    &face_row,
-                    config.recognition.valid_crop_scale,
-                ) {
-                    Ok(score) if score >= config.anti_spoof.threshold => {
-                        liveness_score = Some(score);
-                        liveness_status = "pass";
-                    }
-                    Ok(score) => {
-                        liveness_score = Some(score);
-                        liveness_status = "spoof";
-                        liveness_allowed = false;
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!(
-                                "Spoof detected ({score:.3}) det:{:.1}% ({}/{})",
-                                confidence * 100.0,
-                                attempt,
-                                max_attempts
-                            ),
+
+            match runtime.check_liveness(&frame, &detection) {
+                Ok(Some(score)) if score >= config.anti_spoof.threshold => {
+                    liveness_score = Some(score);
+                    liveness_status = "pass";
+                }
+                Ok(Some(score)) => {
+                    liveness_score = Some(score);
+                    liveness_status = "spoof";
+                    liveness_allowed = false;
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!(
+                            "Spoof detected ({score:.3}) det:{:.1}% ({}/{})",
+                            confidence * 100.0,
+                            attempt,
+                            max_attempts
+                        ),
+                    )?;
+                }
+                Ok(None) => {}
+                Err(facepass_core::Error::InvalidFace(reason)) => {
+                    liveness_status = "invalid";
+                    liveness_allowed = false;
+                    print_status_line(
+                        &mut last_status_width,
+                        &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+                    )?;
+                    if view {
+                        let mut display = frame.try_clone()?;
+                        draw_faces(
+                            &mut display,
+                            &detections,
+                            Some(&detection),
+                            Some(liveness_box_color(liveness_status)),
                         )?;
-                    }
-                    Err(facepass_core::Error::InvalidFace(reason)) => {
-                        liveness_status = "invalid";
-                        liveness_allowed = false;
-                        print_status_line(
-                            &mut last_status_width,
-                            &format!("Invalid face ({}) ({}/{})", reason, attempt, max_attempts),
+                        draw_required_crops(&mut display, &detections, runtime.valid_crop_scale())?;
+                        draw_text(
+                            &mut display,
+                            0,
+                            &format!("Invalid face: {}", reason),
+                            Scalar::new(0.0, 0.0, 255.0, 0.0),
                         )?;
-                        if view {
-                            let mut display = frame.try_clone()?;
-                            draw_faces(
-                                &mut display,
-                                &faces,
-                                Some(&face_row),
-                                Some(liveness_box_color(liveness_status)),
-                            )?;
-                            draw_required_crops(
-                                &mut display,
-                                &faces,
-                                config.recognition.valid_crop_scale,
-                            )?;
-                            draw_text(
-                                &mut display,
-                                0,
-                                &format!("Invalid face: {}", reason),
-                                Scalar::new(0.0, 0.0, 255.0, 0.0),
-                            )?;
-                            highgui::imshow(WINDOW_NAME, &display)?;
-                            if should_abort(highgui::wait_key(1)?) {
-                                clear_status_line(&mut last_status_width)?;
-                                return Ok(AddLoopOutcome::Cancelled);
-                            }
+                        highgui::imshow(WINDOW_NAME, &display)?;
+                        if should_abort(highgui::wait_key(1)?) {
+                            clear_status_line(&mut last_status_width)?;
+                            return Ok(AddLoopOutcome::Cancelled);
                         }
                     }
-                    Err(e) => {
-                        clear_status_line(&mut last_status_width)?;
-                        return Err(anyhow!("Anti-spoof error: {}", e));
-                    }
+                }
+                Err(e) => {
+                    clear_status_line(&mut last_status_width)?;
+                    return Err(anyhow!("Anti-spoof error: {}", e));
                 }
             }
 
@@ -311,13 +284,11 @@ pub fn run(
             }
 
             if liveness_allowed {
-                let aligned = recognizer.align_crop(&frame, &face_row)?;
-                let feature = recognizer.extract_feature(&aligned)?;
-                let feature_vec = facepass_core::recognition::mat_to_vec(&feature)?;
-
-                if confidence > config.detection.score_threshold && confidence > best_confidence {
-                    best_confidence = confidence;
-                    best_feature = Some(feature_vec);
+                if let Ok(embedding) = runtime.extract_embedding(&frame, &detection) {
+                    if confidence > detector_threshold && confidence > best_confidence {
+                        best_confidence = confidence;
+                        best_embedding = Some(embedding);
+                    }
                 }
             }
 
@@ -325,11 +296,11 @@ pub fn run(
                 let mut display = frame.try_clone()?;
                 draw_faces(
                     &mut display,
-                    &faces,
-                    Some(&face_row),
+                    &detections,
+                    Some(&detection),
                     Some(liveness_box_color(liveness_status)),
                 )?;
-                draw_required_crops(&mut display, &faces, config.recognition.valid_crop_scale)?;
+                draw_required_crops(&mut display, &detections, runtime.valid_crop_scale())?;
                 draw_text(
                     &mut display,
                     0,
@@ -338,19 +309,17 @@ pub fn run(
                 )?;
 
                 let live_text = match (liveness_status, liveness_score) {
-                    ("pass", Some(s)) => format!("Anti-spoof: PASS ({:.3})", s),
-                    ("spoof", Some(s)) => format!("Anti-spoof: SPOOF ({:.3})", s),
+                    ("pass", Some(score)) => format!("Anti-spoof: PASS ({:.3})", score),
+                    ("spoof", Some(score)) => format!("Anti-spoof: SPOOF ({:.3})", score),
                     ("invalid", _) => "Anti-spoof: INVALID FACE".to_string(),
-                    ("error", _) => "Anti-spoof: ERROR".to_string(),
                     _ => "Anti-spoof: disabled".to_string(),
                 };
                 let live_color = match liveness_status {
                     "pass" => Scalar::new(0.0, 255.0, 0.0, 0.0),
-                    "spoof" | "invalid" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+                    "spoof" | "invalid" => Scalar::new(0.0, 0.0, 255.0, 0.0),
                     _ => Scalar::new(200.0, 200.0, 200.0, 0.0),
                 };
                 draw_text(&mut display, 1, &live_text, live_color)?;
-
                 draw_text(
                     &mut display,
                     2,
@@ -365,7 +334,7 @@ pub fn run(
                     return Ok(AddLoopOutcome::Cancelled);
                 }
                 if should_capture(key) {
-                    if best_feature.is_some() {
+                    if best_embedding.is_some() {
                         break;
                     }
                     draw_text(
@@ -388,13 +357,12 @@ pub fn run(
                     ),
                 )?;
 
-                // Non-debug CLI mode still supports fast capture without extra input.
-                if best_feature.is_some() && !debug && !view && confidence > 0.98 {
+                if best_embedding.is_some() && !debug && !view && confidence > 0.98 {
                     break;
                 }
             }
 
-            if capture_requested && best_feature.is_some() {
+            if capture_requested && best_embedding.is_some() {
                 break;
             }
         }
@@ -404,9 +372,7 @@ pub fn run(
 
     clear_status_line(&mut last_status_width)?;
     drop(command_input.take());
-    drop(anti_spoof);
-    drop(recognizer);
-    drop(detector);
+    drop(runtime);
     drop(camera);
     close_view_window(WINDOW_NAME, view)?;
 
@@ -420,9 +386,8 @@ pub fn run(
 
     println!();
 
-    if let Some(feature) = best_feature {
-        // Save the face
-        let record = FaceRecord::new(&username, group.id, &face_label, feature);
+    if let Some(embedding) = best_embedding {
+        let record = FaceRecord::new(&username, group.id, &face_label, embedding);
         storage.save_face(&record)?;
 
         println!("\n✓ Face added successfully!");
@@ -430,6 +395,8 @@ pub fn run(
         println!("  Group: {}", group.name);
         println!("  Label: {}", face_label);
         println!("  Confidence: {:.1}%", best_confidence * 100.0);
+        println!("  Model ID: {}", record.data.model_id);
+        println!("  Embedding dim: {}", record.data.embedding_dim);
         println!("  ID: {}", record.id);
 
         let new_count = storage.load_faces_in_group(&username, &group.id)?.len();
@@ -438,7 +405,7 @@ pub fn run(
             new_count, config.recognition.max_faces_per_group
         );
     } else {
-        return Err(anyhow::anyhow!(
+        return Err(anyhow!(
             "Could not capture a good face image. Please try again with better lighting."
         ));
     }
@@ -471,7 +438,6 @@ fn format_liveness_text(status: &str, score: Option<f32>) -> String {
         ("pass", Some(score)) => format!("pass/{score:.3}"),
         ("spoof", Some(score)) => format!("spoof/{score:.3}"),
         ("invalid", _) => "invalid".to_string(),
-        ("error", _) => "error".to_string(),
         _ => "off".to_string(),
     }
 }
@@ -488,18 +454,14 @@ fn shorten_error(message: &str) -> String {
 
 fn draw_faces(
     image: &mut Mat,
-    faces: &Mat,
-    primary_face: Option<&Mat>,
+    faces: &[DetectionResult],
+    primary_face: Option<&DetectionResult>,
     primary_color: Option<Scalar>,
 ) -> Result<()> {
-    let rows = faces.rows();
-    for i in 0..rows {
-        let x = *faces.at_2d::<f32>(i, 0)? as i32;
-        let y = *faces.at_2d::<f32>(i, 1)? as i32;
-        let w = *faces.at_2d::<f32>(i, 2)? as i32;
-        let h = *faces.at_2d::<f32>(i, 3)? as i32;
-        let rect = Rect::new(x.max(0), y.max(0), w.max(0), h.max(0));
-        let color = if is_primary_face(faces, i, primary_face)? {
+    for face in faces {
+        let (x, y, w, h) = face.bbox;
+        let rect = Rect::new(x.max(0.0) as i32, y.max(0.0) as i32, w.max(0.0) as i32, h.max(0.0) as i32);
+        let color = if is_primary_face(face, primary_face) {
             primary_color.unwrap_or_else(default_face_box_color)
         } else {
             default_face_box_color()
@@ -509,20 +471,14 @@ fn draw_faces(
     Ok(())
 }
 
-fn is_primary_face(faces: &Mat, row_idx: i32, primary_face: Option<&Mat>) -> Result<bool> {
+fn is_primary_face(face: &DetectionResult, primary_face: Option<&DetectionResult>) -> bool {
     let Some(primary_face) = primary_face else {
-        return Ok(false);
+        return false;
     };
 
-    for col in 0..4 {
-        let face_value = *faces.at_2d::<f32>(row_idx, col)?;
-        let primary_value = *primary_face.at_2d::<f32>(0, col)?;
-        if (face_value - primary_value).abs() > 0.5 {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
+    let (x, y, w, h) = face.bbox;
+    let (px, py, pw, ph) = primary_face.bbox;
+    (x - px).abs() <= 0.5 && (y - py).abs() <= 0.5 && (w - pw).abs() <= 0.5 && (h - ph).abs() <= 0.5
 }
 
 fn default_face_box_color() -> Scalar {
@@ -531,7 +487,7 @@ fn default_face_box_color() -> Scalar {
 
 fn liveness_box_color(status: &str) -> Scalar {
     match status {
-        "spoof" | "invalid" | "error" => Scalar::new(0.0, 0.0, 255.0, 0.0),
+        "spoof" | "invalid" => Scalar::new(0.0, 0.0, 255.0, 0.0),
         _ => default_face_box_color(),
     }
 }
@@ -565,14 +521,15 @@ fn close_view_window(window_name: &str, view: bool) -> Result<()> {
     Ok(())
 }
 
-fn draw_required_crops(image: &mut Mat, faces: &Mat, valid_crop_scale: f32) -> Result<()> {
-    for row_idx in 0..faces.rows() {
-        let face_row = faces.row(row_idx)?.try_clone()?;
-        if let Ok((rect, valid)) = facepass_core::face_validation::compute_valid_crop_rect(
-            image,
-            &face_row,
-            valid_crop_scale,
-        ) {
+fn draw_required_crops(
+    image: &mut Mat,
+    faces: &[DetectionResult],
+    valid_crop_scale: f32,
+) -> Result<()> {
+    for detection in faces {
+        if let Ok((rect, valid)) =
+            facepass_core::face_validation::compute_valid_crop_rect(image, detection, valid_crop_scale)
+        {
             let color = if valid {
                 Scalar::new(0.0, 255.0, 255.0, 0.0)
             } else {
