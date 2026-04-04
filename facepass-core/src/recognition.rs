@@ -8,7 +8,7 @@ use crate::config::{
 use crate::error::{Error, Result};
 use crate::models::{DetectionResult, FaceEmbedding};
 use opencv::{
-    core::{Mat, Ptr, Scalar, Size, Vector, CV_32F},
+    core::{Mat, Ptr, Scalar, Size, Vec3b, Vector, CV_32F, CV_8UC3},
     dnn,
     objdetect::FaceRecognizerSF,
     prelude::*,
@@ -185,7 +185,13 @@ fn image_to_tensor(image: &Mat, config: &RecognizerPreprocessConfig) -> Result<M
         }
     };
 
-    let data = reordered.data_typed::<u8>()?;
+    if reordered.typ() != CV_8UC3 {
+        return Err(Error::Recognition(format!(
+            "Recognizer preprocess expected CV_8UC3 image, got OpenCV type {}",
+            reordered.typ()
+        )));
+    }
+
     let width = config.input_width as usize;
     let height = config.input_height as usize;
     let channels = 3usize;
@@ -193,10 +199,10 @@ fn image_to_tensor(image: &Mat, config: &RecognizerPreprocessConfig) -> Result<M
 
     for y in 0..height {
         for x in 0..width {
+            let pixel = reordered.at_2d::<Vec3b>(y as i32, x as i32)?;
             for c in 0..channels {
-                let src_idx = ((y * width + x) * channels) + c;
                 let normalized =
-                    (data[src_idx] as f32 - config.mean[c]) / config.std[c].max(f32::EPSILON);
+                    (pixel[c] as f32 - config.mean[c]) / config.std[c].max(f32::EPSILON);
                 let dst_idx = match config.input_layout {
                     InputLayout::Nchw => (c * height * width) + (y * width) + x,
                     InputLayout::Nhwc => ((y * width + x) * channels) + c,
@@ -237,6 +243,7 @@ fn l2_normalize(mut feature: Vec<f32>) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opencv::core::{Mat, Scalar};
 
     #[test]
     fn test_l2_normalize_produces_unit_vector() {
@@ -247,5 +254,33 @@ mod tests {
             .sum::<f64>()
             .sqrt();
         assert!((norm - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_image_to_tensor_accepts_cv_8uc3_input() {
+        let image = Mat::new_rows_cols_with_default(
+            112,
+            112,
+            CV_8UC3,
+            Scalar::new(10.0, 20.0, 30.0, 0.0),
+        )
+        .unwrap();
+        let config = RecognizerPreprocessConfig {
+            input_width: 112,
+            input_height: 112,
+            input_layout: InputLayout::Nhwc,
+            color_order: ColorOrder::Rgb,
+            mean: [0.0, 0.0, 0.0],
+            std: [1.0, 1.0, 1.0],
+            l2_normalize: false,
+        };
+
+        let blob = image_to_tensor(&image, &config).unwrap();
+        let values = blob.data_typed::<f32>().unwrap();
+
+        assert_eq!(values.len(), 112 * 112 * 3);
+        assert_eq!(values[0], 30.0);
+        assert_eq!(values[1], 20.0);
+        assert_eq!(values[2], 10.0);
     }
 }
