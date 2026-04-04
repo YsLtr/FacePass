@@ -126,8 +126,20 @@ enum Commands {
         frames: Option<u32>,
     },
 
-    /// View or edit configuration
+    /// View or edit configuration and defaults
     Config {
+        /// Target user selector when using --set-default-group
+        #[arg(short, long)]
+        user: Option<String>,
+
+        /// Target group selector when using --set-default-group
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+
+        /// Set the default face group, optionally passing the selector inline
+        #[arg(long = "set-default-group", num_args = 0..=1, value_name = "GROUP")]
+        set_default_group: Option<Option<String>>,
+
         /// Show current configuration
         #[arg(short, long)]
         show: bool,
@@ -156,23 +168,7 @@ enum Commands {
     Cancel,
 
     /// Check system status and requirements
-    Status {
-        /// Show the full status report
-        #[arg(short, long)]
-        show: bool,
-
-        /// Target user selector when using --set-default-group
-        #[arg(short, long)]
-        user: Option<String>,
-
-        /// Target group selector when using --set-default-group
-        #[arg(short = 'g', long)]
-        group: Option<String>,
-
-        /// Set the default face group, optionally passing the selector inline
-        #[arg(long = "set-default-group", num_args = 0..=1, value_name = "GROUP")]
-        set_default_group: Option<Option<String>>,
-    },
+    Status,
 
     /// Enable face authentication (start daemon)
     Enable,
@@ -234,20 +230,28 @@ fn main() {
             commands::test::run(&config_path, user, group, face, frames, debug, view)
         }
         Commands::Config {
+            user,
+            group,
+            set_default_group,
             show,
             preset,
             list_presets,
             use_preset,
             set,
-        } => commands::config::run(&config_path, show, preset, list_presets, use_preset, set),
-        Commands::Cameras => commands::cameras::run(),
-        Commands::Cancel => commands::cancel::run(&config_path),
-        Commands::Status {
-            show,
+        } => commands::config::run(
+            &config_path,
             user,
             group,
             set_default_group,
-        } => commands::status::run(&config_path, show, user, group, set_default_group),
+            show,
+            preset,
+            list_presets,
+            use_preset,
+            set,
+        ),
+        Commands::Cameras => commands::cameras::run(),
+        Commands::Cancel => commands::cancel::run(&config_path),
+        Commands::Status => commands::status::run(&config_path),
         Commands::Enable => {
             if !is_root {
                 eprintln!("Error: Root privileges required");

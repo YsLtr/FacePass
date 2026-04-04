@@ -1,12 +1,19 @@
 //! Config command
 
+use super::{ensure_user_access, resolve_username};
 use anyhow::{anyhow, Result};
-use facepass_core::config::{Config, ConfigFile};
+use facepass_core::{
+    config::{Config, ConfigFile},
+    storage::FaceStorage,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn run(
     config_path: &str,
+    user: Option<String>,
+    group: Option<String>,
+    set_default_group: Option<Option<String>>,
     show: bool,
     preset: Option<String>,
     list_presets: bool,
@@ -19,8 +26,16 @@ pub fn run(
         list_presets,
         use_preset.as_deref(),
         set.as_deref(),
+        user.as_deref(),
+        group.as_deref(),
+        set_default_group.is_some(),
     )?;
-    let show_by_default = !list_presets && use_preset.is_none() && set.is_none();
+    let show_by_default =
+        !list_presets && use_preset.is_none() && set.is_none() && set_default_group.is_none();
+
+    if let Some(inline_group) = set_default_group {
+        return set_default_group_command(config_path, user, group, inline_group);
+    }
 
     if list_presets {
         return list_presets_command(config_path);
@@ -48,7 +63,26 @@ fn validate_args(
     list_presets: bool,
     use_preset: Option<&str>,
     set: Option<&str>,
+    user: Option<&str>,
+    group: Option<&str>,
+    set_default_group: bool,
 ) -> Result<()> {
+    if !set_default_group && user.is_some() {
+        return Err(anyhow!(
+            "--user can only be combined with --set-default-group"
+        ));
+    }
+
+    if !set_default_group && group.is_some() {
+        return Err(anyhow!(
+            "--group can only be combined with --set-default-group"
+        ));
+    }
+
+    if show && set_default_group {
+        return Err(anyhow!("--show cannot be combined with --set-default-group"));
+    }
+
     if show && list_presets {
         return Err(anyhow!("--show cannot be combined with --list-presets"));
     }
@@ -73,6 +107,12 @@ fn validate_args(
         return Err(anyhow!("--preset cannot be combined with --set"));
     }
 
+    if preset.is_some() && set_default_group {
+        return Err(anyhow!(
+            "--preset cannot be combined with --set-default-group"
+        ));
+    }
+
     if list_presets && use_preset.is_some() {
         return Err(anyhow!(
             "--list-presets cannot be combined with --use-preset"
@@ -83,9 +123,47 @@ fn validate_args(
         return Err(anyhow!("--list-presets cannot be combined with --set"));
     }
 
+    if list_presets && set_default_group {
+        return Err(anyhow!(
+            "--list-presets cannot be combined with --set-default-group"
+        ));
+    }
+
     if use_preset.is_some() && set.is_some() {
         return Err(anyhow!("--use-preset cannot be combined with --set"));
     }
+
+    if use_preset.is_some() && set_default_group {
+        return Err(anyhow!(
+            "--use-preset cannot be combined with --set-default-group"
+        ));
+    }
+
+    if set.is_some() && set_default_group {
+        return Err(anyhow!("--set cannot be combined with --set-default-group"));
+    }
+
+    Ok(())
+}
+
+fn set_default_group_command(
+    config_path: &str,
+    user: Option<String>,
+    group: Option<String>,
+    inline_group: Option<String>,
+) -> Result<()> {
+    let config = Config::load_with_fallback(config_path)?;
+    let storage = FaceStorage::new(&config.storage.data_dir)?;
+    let username = resolve_username(&storage, user.as_deref())?;
+    ensure_user_access(&username, "change default groups for other users")?;
+    let group_selector = resolve_default_group_selector(inline_group, group)?;
+    let target_group = storage.resolve_group(&username, &group_selector)?;
+    storage.set_default_group(&username, &target_group.id)?;
+
+    println!("Default face group updated");
+    println!("  User: {}", username);
+    println!("  Group: {}", target_group.name);
+    println!("  Group ID: {}", target_group.id);
 
     Ok(())
 }
@@ -216,6 +294,22 @@ fn format_source(source: Option<&Path>) -> String {
         .unwrap_or_else(|| "built-in defaults".to_string())
 }
 
+fn resolve_default_group_selector(
+    inline_group: Option<String>,
+    flag_group: Option<String>,
+) -> Result<String> {
+    match (inline_group, flag_group) {
+        (Some(inline_group), None) => Ok(inline_group),
+        (None, Some(flag_group)) => Ok(flag_group),
+        (None, None) => Err(anyhow!(
+            "--set-default-group requires a group selector, either inline or via --group"
+        )),
+        (Some(_), Some(_)) => Err(anyhow!(
+            "Specify the target group either as '--set-default-group <group>' or with '--group', not both"
+        )),
+    }
+}
+
 fn print_config(config: &Config) {
     println!("[video]");
     println!("  device = \"{}\"", config.video.device);
@@ -299,4 +393,58 @@ fn print_config(config: &Config) {
 
     println!("[storage]");
     println!("  data_dir = \"{}\"", config.storage.data_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_default_group_selector, validate_args};
+
+    #[test]
+    fn resolve_default_group_selector_accepts_inline_value() {
+        let selector =
+            resolve_default_group_selector(Some("default".to_string()), None).unwrap();
+        assert_eq!(selector, "default");
+    }
+
+    #[test]
+    fn resolve_default_group_selector_rejects_duplicate_sources() {
+        let error = resolve_default_group_selector(
+            Some("default".to_string()),
+            Some("default".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Specify the target group either as '--set-default-group <group>' or with '--group', not both"
+        );
+    }
+
+    #[test]
+    fn validate_args_rejects_user_without_set_default_group() {
+        let error = validate_args(
+            false,
+            None,
+            false,
+            None,
+            None,
+            Some("alice"),
+            None,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--user can only be combined with --set-default-group"
+        );
+    }
+
+    #[test]
+    fn validate_args_rejects_set_default_group_with_show() {
+        let error =
+            validate_args(true, None, false, None, None, None, None, true).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "--show cannot be combined with --set-default-group"
+        );
+    }
 }

@@ -140,9 +140,9 @@ sudo facepass remove 0
 sudo facepass remove normal
 
 # 切换默认人脸组
-sudo facepass status --set-default-group <组 selector>
-sudo facepass status --set-default-group --user <用户 selector> --group <组 selector>
-sudo facepass status --set-default-group <组 selector> --show
+sudo facepass config --set-default-group <组 selector>
+sudo facepass config --user <用户 selector> --set-default-group <组 selector>
+sudo facepass config --user <用户 selector> --set-default-group --group <组 selector>
 
 # 测试识别
 sudo facepass test [--user <用户 selector>] [--group <组 selector>] [--face <face selector>] [--frames <帧数>] [GROUP]
@@ -197,6 +197,7 @@ log_level = "debug"
 - `facepass config --list-presets`：列出可用 preset
 - `facepass config --show`：查看当前生效配置
 - `facepass config --use-preset dev`：切换到 `dev` preset
+- `facepass config --set-default-group default`：切换当前用户默认人脸组
 
 ## API 接口
 
@@ -342,7 +343,7 @@ fi
 
 **获取状态**:
 ```bash
-# JSON 格式输出状态
+# 输出系统状态
 facepass status
 ```
 

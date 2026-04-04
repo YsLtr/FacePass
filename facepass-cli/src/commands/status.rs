@@ -1,65 +1,25 @@
 //! Status check command
 
-use super::{ensure_user_access, resolve_username};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use facepass_core::{
     camera::check_camera,
     config::{Config, DaemonRuntimeState, DEFAULT_RUNTIME_STATE_PATH},
     security::{is_lid_closed, is_ssh_session},
-    storage::FaceStorage,
 };
 use std::path::Path;
 
-pub fn run(
-    config_path: &str,
-    show: bool,
-    user: Option<String>,
-    group: Option<String>,
-    set_default_group: Option<Option<String>>,
-) -> Result<()> {
-    let has_set_default_group = set_default_group.is_some();
-
-    if set_default_group.is_none() && (user.is_some() || group.is_some()) {
-        return Err(anyhow!(
-            "--user and --group can only be used together with --set-default-group"
-        ));
-    }
-
+pub fn run(config_path: &str) -> Result<()> {
     let resolved = Config::load_with_fallback_and_source(config_path)?;
     let config = resolved.config;
     let config_source = resolved.source;
     let config_active_preset = resolved.active_preset;
     let runtime_state = load_runtime_state();
-    let storage = FaceStorage::new(&config.storage.data_dir)?;
-
-    if let Some(inline_group) = set_default_group {
-        let username = resolve_username(&storage, user.as_deref())?;
-        ensure_user_access(&username, "change default groups for other users")?;
-        let group_selector = resolve_default_group_selector(inline_group, group)?;
-        let target_group = storage.resolve_group(&username, &group_selector)?;
-        storage.set_default_group(&username, &target_group.id)?;
-
-        println!("Default face group updated");
-        println!("  User: {}", username);
-        println!("  Group: {}", target_group.name);
-        println!("  Group ID: {}", target_group.id);
-    }
-
-    let should_show_report = show || !has_set_default_group;
-    if !should_show_report {
-        return Ok(());
-    }
-
-    if has_set_default_group {
-        println!();
-    }
 
     print_status_report(
         &config,
         config_source.as_deref(),
         &config_active_preset,
         runtime_state.as_ref(),
-        &storage,
     )
 }
 
@@ -68,7 +28,6 @@ fn print_status_report(
     config_source: Option<&std::path::Path>,
     config_active_preset: &str,
     runtime_state: Option<&DaemonRuntimeState>,
-    storage: &FaceStorage,
 ) -> Result<()> {
     println!("FacePass System Status");
     println!("======================\n");
@@ -191,28 +150,6 @@ fn print_status_report(
         println!("Open");
     }
 
-    println!("\nRegistered Users:");
-    let users = storage.list_users()?;
-
-    if users.is_empty() {
-        println!("  (none)");
-    } else {
-        for user in &users {
-            let metadata = storage.get_metadata(user)?;
-            let default_group = metadata
-                .default_group()
-                .map(|group| group.name.as_str())
-                .unwrap_or("(none)");
-            println!(
-                "  {} ({} group(s), {} face(s), default: {})",
-                user,
-                metadata.groups.len(),
-                metadata.total_face_count(),
-                default_group
-            );
-        }
-    }
-
     println!("\nConfiguration:");
     println!(
         "  Running preset: {}",
@@ -237,22 +174,6 @@ fn print_status_report(
     }
 
     Ok(())
-}
-
-fn resolve_default_group_selector(
-    inline_group: Option<String>,
-    flag_group: Option<String>,
-) -> Result<String> {
-    match (inline_group, flag_group) {
-        (Some(inline_group), None) => Ok(inline_group),
-        (None, Some(flag_group)) => Ok(flag_group),
-        (None, None) => Err(anyhow!(
-            "--set-default-group requires a group selector, either inline or via --group"
-        )),
-        (Some(_), Some(_)) => Err(anyhow!(
-            "Specify the target group either as '--set-default-group <group>' or with '--group', not both"
-        )),
-    }
 }
 
 fn is_daemon_running(socket_path: &str) -> bool {
