@@ -100,23 +100,23 @@ v1se_crop_scale = 4.0
 data_dir = "/var/lib/facepass/faces"
 
 [presets.dev.models]
-active_detector = "scrfd"
+active_detector = "yunet"
 active_recognizer = "ghostfacenet"
 anti_spoof_v1se_path = "/home/ysltr/builds/FacePass/facepass/models/MiniFASNetV1SE.onnx"
 anti_spoof_v2_path = "/home/ysltr/builds/FacePass/facepass/models/MiniFASNetV2.onnx"
 
 [presets.dev.models.yunet]
 path = "/home/ysltr/builds/FacePass/facepass/models/face_detection_yunet_2023mar.onnx"
-input_width = 320
-input_height = 320
-score_threshold = 0.9
+input_width = 640
+input_height = 640
+score_threshold = 0.8
 nms_threshold = 0.3
 
 [presets.dev.models.scrfd]
 path = "/home/ysltr/builds/FacePass/facepass/models/SCRFD_2.5g_bnkps.onnx"
 input_width = 640
 input_height = 640
-score_threshold = 0.5
+score_threshold = 0.7
 nms_threshold = 0.4
 
 [presets.dev.models.sface]
